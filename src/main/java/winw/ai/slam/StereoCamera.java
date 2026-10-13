@@ -1,12 +1,16 @@
 package winw.ai.slam;
 
+import lombok.extern.slf4j.Slf4j;
+
 import org.opencv.core.*;
 import org.opencv.videoio.*;
 
 /** One device carrying a synchronized stereo pair, never two independently timed USB reads. */
+@Slf4j
 public final class StereoCamera implements AutoCloseable {
     private final VideoCapture capture=new VideoCapture();
     private final Mat pair=new Mat();
+    private boolean firstFrame=true;
     private final StereoCalibration calibration;
     private final LiveSlamConfig config;
     public StereoCamera(int device,StereoCalibration calibration,LiveSlamConfig config){
@@ -18,10 +22,12 @@ public final class StereoCamera implements AutoCloseable {
             capture.set(Videoio.CAP_PROP_FRAME_WIDTH,calibration.width*(config.layout==LiveSlamConfig.Layout.SIDE_BY_SIDE?2:1));
             capture.set(Videoio.CAP_PROP_FRAME_HEIGHT,calibration.height*(config.layout==LiveSlamConfig.Layout.TOP_BOTTOM?2:1));
             capture.set(Videoio.CAP_PROP_FPS,config.fps);
+            log.info("Camera device={} backend={} layout={} swapEyes={} negotiated={}x{} fps={} fourcc={}",device,config.backend,config.layout,config.swapEyes,capture.get(Videoio.CAP_PROP_FRAME_WIDTH),capture.get(Videoio.CAP_PROP_FRAME_HEIGHT),capture.get(Videoio.CAP_PROP_FPS),capture.get(Videoio.CAP_PROP_FOURCC));
         }catch(RuntimeException e){close();throw e;}
     }
     public boolean read(Mat left,Mat right){
         if(!capture.read(pair)||pair.empty())return false;
+        if(firstFrame){log.info("First captured stereo frame: {}x{} channels={}",pair.cols(),pair.rows(),pair.channels());firstFrame=false;}
         split(pair,calibration,config.layout,config.swapEyes,left,right);return true;
     }
     static void split(Mat pair,StereoCalibration calibration,LiveSlamConfig.Layout layout,boolean swap,Mat left,Mat right){

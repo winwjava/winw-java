@@ -1,18 +1,26 @@
 package winw.ai.slam;
 
+import lombok.extern.slf4j.Slf4j;
+
 import java.io.*;
 import java.nio.file.*;
-import java.util.Locale;
+import java.util.Arrays;
 import org.opencv.core.*;
 import org.opencv.imgcodecs.Imgcodecs;
 
 /** Dataset manifest or a single hardware-synchronized side-by-side camera. */
+@Slf4j
 public final class StereoSlamDemo {
     private StereoSlamDemo(){}
     public static void main(String[] args)throws Exception{
+        if(args.length==0){
+            args=new String[]{"camera","docs/slam/raw-example.properties","0","target/slam-output","docs/slam/live-example.properties"};
+            log.warn("Using example calibration: replace K,D,R,T and per-eye dimensions with measured camera calibration before relying on depth/pose.");
+        }
+        log.info("SLAM launch arguments: {}",Arrays.toString(args));
         if(args.length>=4&&(args[0].equals("camera")||args[0].equals("dataset-view"))){LiveStereoSlam.main(args);return;}
         if(args.length<4||(!args[0].equals("dataset")&&!args[0].equals("camera"))){
-            System.out.println("dataset <calibration.properties> <manifest.txt> <output-directory>\n"
+            log.info("dataset <calibration.properties> <manifest.txt> <output-directory>\n"
                 +"camera <calibration.properties> <stereo-device-index> <output-directory> [live.properties]\n"
                 +"dataset-view <calibration.properties> <manifest.txt> <output-directory> [live.properties]");return;
         }
@@ -37,7 +45,7 @@ public final class StereoSlamDemo {
     private static void run(Mat left,Mat right,double time,StereoRig rig,StereoSlam slam){
         Mat l=new Mat(),r=new Mat();
         try{rig.rectify(left,right,l,r);StereoSlam.Result s=slam.process(l,r,time);
-            System.out.printf(Locale.ROOT,"%.3f %s inliers=%d stereo=%d keyframes=%d loop=%s mapFull=%s position=%s%n",
+            log.debug("timestamp={} state={} inliers={} stereo={} keyframes={} loop={} mapFull={} position={}",
                 time,s.state,s.inliers,s.stereoPoints,s.keyframes,s.loopClosed,s.mapFull,s.pose);
         }finally{l.release();r.release();}
     }

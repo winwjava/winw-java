@@ -1,5 +1,7 @@
 package winw.ai.slam;
 
+import lombok.extern.slf4j.Slf4j;
+
 import java.io.BufferedWriter;
 import java.io.IOException;
 import java.nio.file.Files;
@@ -11,6 +13,7 @@ import org.opencv.features2d.*;
 import org.opencv.imgproc.Imgproc;
 
 /** Single-threaded sparse stereo SLAM. Input must be synchronized and rectified. */
+@Slf4j
 public final class StereoSlam implements AutoCloseable {
     public enum State { INITIALIZING, TRACKING, RELOCALIZED, LOST }
     public static final class Result {
@@ -53,11 +56,13 @@ public final class StereoSlam implements AutoCloseable {
     private int sequence;
     private double lastTime=Double.NEGATIVE_INFINITY;
     private boolean closed;
+    private long lastDiagnosticNanos;
     private State state=State.INITIALIZING;
 
     public StereoSlam(StereoCalibration calibration,SlamConfig config){
         config.validate();this.calibration=Objects.requireNonNull(calibration);this.config=config.copy();
         orb=ORB.create(config.features);intrinsics=calibration.cameraMatrix();
+        log.info("SLAM calibration per-eye={}x{} fx={} fy={} cx={} cy={} rightCx={} baseline={}m; features={} minInliers={} epipolarTolerance={}px depth=[{},{}]m",calibration.width,calibration.height,calibration.fx,calibration.fy,calibration.cx,calibration.cy,calibration.rightCx,calibration.baseline,config.features,config.minInliers,config.epipolarTolerance,config.minDepth,config.maxDepth);
     }
     public Result process(Mat left,Mat right,double timestamp){
         if(closed)throw new IllegalStateException("Engine closed");
@@ -126,6 +131,12 @@ public final class StereoSlam implements AutoCloseable {
     private int pendingLoop=-1;
     private Pose pendingLoopPose,pendingTrackingPose;
     private Result result(State next,Pose pose,int n,int depth,boolean loop){
+        long now=System.nanoTime();
+        if(next!=state||sequence==1||now-lastDiagnosticNanos>=2_000_000_000L){
+            if(pose==null)log.warn("SLAM frame={} state={} -> {} stereoPoints={} required={} inliers={} keyframes={}; no pose, occupancy fusion skipped",sequence,state,next,depth,config.minInliers,n,keyframes.size());
+            else log.info("SLAM frame={} state={} -> {} stereoPoints={} inliers={} keyframes={} loop={} pose={}",sequence,state,next,depth,n,keyframes.size(),loop,pose);
+            lastDiagnosticNanos=now;
+        }
         state=next;if(next==State.LOST)pendingLoop=-1;
         return new Result(next,pose,n,depth,keyframes.size(),loop,keyframes.size()>=config.maxKeyframes);
     }
@@ -144,12 +155,22 @@ public final class StereoSlam implements AutoCloseable {
         try{
             orb.detectAndCompute(l,mask,lk,f.descriptors);orb.detectAndCompute(r,mask,rk,rd);
             f.keys=lk.toArray();KeyPoint[] rightKeys=rk.toArray();f.points=new double[f.keys.length][];
-            for(DMatch m:matches(f.descriptors,rd)){
+            List<DMatch> stereoMatches=matches(f.descriptors,rd);
+            int verticalRejected=0,disparityRejected=0,depthRejected=0,accepted=0;
+            double verticalSum=0,disparitySum=0;
+            for(DMatch m:stereoMatches){
                 Point a=f.keys[m.queryIdx].pt,b=rightKeys[m.trainIdx].pt;
-                if(Math.abs(a.y-b.y)>config.epipolarTolerance)continue;
+                verticalSum+=Math.abs(a.y-b.y);disparitySum+=a.x-b.x-(calibration.cx-calibration.rightCx);
+                if(Math.abs(a.y-b.y)>config.epipolarTolerance){verticalRejected++;continue;}
                 double[] p=calibration.triangulate(a.x,a.y,b.x);
-                if(p!=null&&p[2]>=config.minDepth&&p[2]<=config.maxDepth)f.points[m.queryIdx]=p;
+                if(p==null){disparityRejected++;continue;}
+                if(p[2]<config.minDepth||p[2]>config.maxDepth){depthRejected++;continue;}
+                f.points[m.queryIdx]=p;accepted++;
             }
+            String diagnostic="Stereo frame={} leftFeatures={} rightFeatures={} mutualRatioMatches={} rejectVertical={} rejectNonPositiveDisparity={} rejectDepth={} accepted={} meanAbsVertical={}px meanDisparity={}px";
+            Object[] values={sequence+1,f.keys.length,rightKeys.length,stereoMatches.size(),verticalRejected,disparityRejected,depthRejected,accepted,stereoMatches.isEmpty()?0:verticalSum/stereoMatches.size(),stereoMatches.isEmpty()?0:disparitySum/stereoMatches.size()};
+            if(accepted<config.minInliers&&(sequence==0||System.nanoTime()-lastDiagnosticNanos>=2_000_000_000L))log.warn(diagnostic,values);
+            else log.debug(diagnostic,values);
             return f;
         }catch(RuntimeException e){f.close();throw e;}
         finally{l.release();r.release();rd.release();mask.release();lk.release();rk.release();}
@@ -175,7 +196,7 @@ public final class StereoSlam implements AutoCloseable {
             double[] p=world.transform(ref.frame.points[m.queryIdx]);objects.add(new Point3(p[0],p[1],p[2]));
             pixels.add(current.keys[m.trainIdx].pt);
         }
-        if(objects.size()<config.minInliers)return null;
+        if(objects.size()<config.minInliers){log.debug("PnP reference={} correspondences={} required={}",ref.id,objects.size(),config.minInliers);return null;}
         MatOfPoint3f op=new MatOfPoint3f();MatOfPoint2f ip=new MatOfPoint2f();
         Mat rv=new Mat(),tv=new Mat(),inliers=new Mat(),rotation=new Mat();
         MatOfPoint3f goodObjects=new MatOfPoint3f();MatOfPoint2f goodPixels=new MatOfPoint2f(),projected=new MatOfPoint2f();
@@ -183,7 +204,7 @@ public final class StereoSlam implements AutoCloseable {
             op.fromList(objects);ip.fromList(pixels);
             boolean ok=Calib3d.solvePnPRansac(op,ip,intrinsics,distortion,rv,tv,false,150,
                 (float)config.reprojectionError,.999,inliers,Calib3d.SOLVEPNP_EPNP);
-            if(!ok||inliers.rows()<config.minInliers||inliers.rows()<objects.size()*config.minInlierRatio)return null;
+            if(!ok||inliers.rows()<config.minInliers||inliers.rows()<objects.size()*config.minInlierRatio){log.debug("PnP rejected reference={} ok={} correspondences={} inliers={} required={} minRatio={}",ref.id,ok,objects.size(),inliers.rows(),config.minInliers,config.minInlierRatio);return null;}
             List<Point3> gp=new ArrayList<>();List<Point> gi=new ArrayList<>();
             for(int i=0;i<inliers.rows();i++){int j=(int)inliers.get(i,0)[0];gp.add(objects.get(j));gi.add(pixels.get(j));}
             goodObjects.fromList(gp);goodPixels.fromList(gi);

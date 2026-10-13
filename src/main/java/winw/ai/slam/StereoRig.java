@@ -1,5 +1,7 @@
 package winw.ai.slam;
 
+import lombok.extern.slf4j.Slf4j;
+
 import java.io.*;
 import java.nio.file.*;
 import java.util.Properties;
@@ -8,6 +10,7 @@ import org.opencv.core.*;
 import org.opencv.imgproc.Imgproc;
 
 /** Optional pinhole stereo rectification. Fisheye input requires external rectification. */
+@Slf4j
 public final class StereoRig implements AutoCloseable {
     public final StereoCalibration calibration;
     private final Mat lx=new Mat(),ly=new Mat(),rx=new Mat(),ry=new Mat();
@@ -16,6 +19,8 @@ public final class StereoRig implements AutoCloseable {
     public static StereoRig load(Path path)throws IOException{
         Properties p=new Properties();try(Reader r=Files.newBufferedReader(path)){p.load(r);}
         String mode=p.getProperty("rectified","true");
+        log.info("Loading calibration={} rectified={}",path.toAbsolutePath(),mode);
+        if(path.getFileName().toString().contains("example"))log.warn("Example calibration is not a measured camera calibration; verify intrinsics, distortion, baseline and eye order.");
         if(!mode.equals("true")&&!mode.equals("false"))throw new IllegalArgumentException("rectified must be true or false");
         if(mode.equals("true"))return new StereoRig(StereoCalibration.load(path));
         int width=Integer.parseInt(p.getProperty("width")),height=Integer.parseInt(p.getProperty("height"));
