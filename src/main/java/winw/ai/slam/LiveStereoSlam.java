@@ -120,15 +120,16 @@ public final class LiveStereoSlam {
         }
         public double timestamp(){return time;}public void close()throws IOException{reader.close();}
     }
-    public static void main(String[] args)throws Exception{
-        if(args.length<4){System.out.println("camera|dataset-view <calibration.properties> <device|manifest> <output-directory> [live.properties]");return;}
-        if(!args[0].equals("camera")&&!args[0].equals("dataset-view"))throw new IllegalArgumentException("Use camera or dataset-view");
-        OpenCvNative.load();LiveSlamConfig config=LiveSlamConfig.load(args.length>4?Paths.get(args[4]):null);
-        Path output=Paths.get(args[3]).toAbsolutePath();Files.createDirectories(output);
+    public static void main(String[] params)throws Exception{
+//        final String[] params = new String[]{"camera", "0", "manifest", "live.properties"};
+        if(params.length<4){System.out.println("camera|dataset-view <calibration.properties> <device|manifest> <output-directory> [live.properties]");return;}
+        if(!params[0].equals("camera")&&!params[0].equals("dataset-view"))throw new IllegalArgumentException("Use camera or dataset-view");
+        OpenCvNative.load();LiveSlamConfig config=LiveSlamConfig.load(params.length>4?Paths.get(params[4]):null);
+        Path output=Paths.get(params[3]).toAbsolutePath();Files.createDirectories(output);
         AtomicReference<Dashboard> reference=new AtomicReference<>();SwingUtilities.invokeAndWait(()->reference.set(new Dashboard(config,output)));
         Dashboard dashboard=reference.get();Thread worker=new Thread(()->{
             String message;
-            try{run(args,config,output,dashboard);message="已停止，地图与轨迹已保存："+output;}
+            try{run(params,config,output,dashboard);message="已停止，地图与轨迹已保存："+output;}
             catch(Exception error){message="运行失败："+error.getMessage();error.printStackTrace();}
             final String finalMessage=message;SwingUtilities.invokeLater(()->dashboard.complete(finalMessage));
         },"stereo-slam-capture");worker.start();

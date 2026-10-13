@@ -9,7 +9,9 @@ import org.opencv.imgcodecs.Imgcodecs;
 /** Dataset manifest or a single hardware-synchronized side-by-side camera. */
 public final class StereoSlamDemo {
     private StereoSlamDemo(){}
-    public static void main(String[] args)throws Exception{
+    public static void main(String[] aaa)throws Exception{
+        // 默认配置，使用双目相机
+        final String[] args = new String[]{"camera", "docs/slam/raw-example.properties", "0", "manifest"};
         if(args.length>=4&&(args[0].equals("camera")||args[0].equals("dataset-view"))){LiveStereoSlam.main(args);return;}
         if(args.length<4||(!args[0].equals("dataset")&&!args[0].equals("camera"))){
             System.out.println("dataset <calibration.properties> <manifest.txt> <output-directory>\n"
