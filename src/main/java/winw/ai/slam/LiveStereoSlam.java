@@ -1,5 +1,7 @@
 package winw.ai.slam;
 
+import lombok.extern.slf4j.Slf4j;
+
 import java.awt.*;
 import java.awt.event.*;
 import java.awt.image.*;
@@ -15,6 +17,7 @@ import org.opencv.imgcodecs.Imgcodecs;
 import org.opencv.imgproc.Imgproc;
 
 /** Live native Java dashboard. Capture/SLAM on one worker, latest-frame rendering on the EDT. */
+@Slf4j
 public final class LiveStereoSlam {
     private LiveStereoSlam(){}
     private static final class Display {
@@ -89,8 +92,8 @@ public final class LiveStereoSlam {
             details.setText(String.format(Locale.ROOT,"处理 %.1f FPS / %.1f ms    内点 %d    关键帧 %d    表面点 %d    栅格 %d",
                 display.fps,display.milliseconds,result.inliers,result.keyframes,display.map.visiblePoints,display.map.cells.size()));
             if(display.map.occupancy!=null){OccupancySnapshot occ=display.map.occupancy;
-                details.setText(String.format(Locale.ROOT,"处理 %.1f FPS / %.1f ms    内点 %d    OCC 占据 %d / 空闲 %d / 观测 %d 帧%s",
-                    display.fps,display.milliseconds,result.inliers,occ.occupiedCount,occ.freeCount,occ.activeFrames,
+                details.setText(String.format(Locale.ROOT,"处理 %.1f FPS / %.1f ms    内点 %d    双目点 %d    OCC 占据 %d / 空闲 %d / 观测 %d 帧%s",
+                    display.fps,display.milliseconds,result.inliers,result.stereoPoints,occ.occupiedCount,occ.freeCount,occ.activeFrames,
                     occ.capacityLimited?"    已触发体素容量限制":""));}
         }
         void complete(String message){refresh();finished.set(true);timer.stop();stopButton.setEnabled(true);stopButton.setText("关闭");status.setText(message);}
@@ -120,17 +123,17 @@ public final class LiveStereoSlam {
         }
         public double timestamp(){return time;}public void close()throws IOException{reader.close();}
     }
-    public static void main(String[] params)throws Exception{
-//        final String[] params = new String[]{"camera", "0", "manifest", "live.properties"};
-        if(params.length<4){System.out.println("camera|dataset-view <calibration.properties> <device|manifest> <output-directory> [live.properties]");return;}
-        if(!params[0].equals("camera")&&!params[0].equals("dataset-view"))throw new IllegalArgumentException("Use camera or dataset-view");
-        OpenCvNative.load();LiveSlamConfig config=LiveSlamConfig.load(params.length>4?Paths.get(params[4]):null);
-        Path output=Paths.get(params[3]).toAbsolutePath();Files.createDirectories(output);
+    public static void main(String[] args)throws Exception{
+        if(args.length<4){log.info("camera|dataset-view <calibration.properties> <device|manifest> <output-directory> [live.properties]");return;}
+        if(!args[0].equals("camera")&&!args[0].equals("dataset-view"))throw new IllegalArgumentException("Use camera or dataset-view");
+        OpenCvNative.load();LiveSlamConfig config=LiveSlamConfig.load(args.length>4?Paths.get(args[4]):null);
+        Path output=Paths.get(args[3]).toAbsolutePath();Files.createDirectories(output);
+        log.info("Live SLAM mode={} calibration={} source={} output={} layout={} swapEyes={} depth=[{},{}]m",args[0],Paths.get(args[1]).toAbsolutePath(),args[2],output,config.layout,config.swapEyes,config.minDepth,config.maxDepth);
         AtomicReference<Dashboard> reference=new AtomicReference<>();SwingUtilities.invokeAndWait(()->reference.set(new Dashboard(config,output)));
         Dashboard dashboard=reference.get();Thread worker=new Thread(()->{
             String message;
-            try{run(params,config,output,dashboard);message="已停止，地图与轨迹已保存："+output;}
-            catch(Exception error){message="运行失败："+error.getMessage();error.printStackTrace();}
+            try{run(args,config,output,dashboard);message="已停止，地图与轨迹已保存："+output;}
+            catch(Exception error){message="运行失败："+error.getMessage();log.error("SLAM run failed: mode={}, calibration={}, source={}, output={}",args[0],args[1],args[2],output,error);}
             final String finalMessage=message;SwingUtilities.invokeLater(()->dashboard.complete(finalMessage));
         },"stereo-slam-capture");worker.start();
     }

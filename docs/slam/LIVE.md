@@ -100,3 +100,33 @@ Windows 若 AUTO 后端打不开设备，可尝试 `camera.backend=700`（Direct
 测试生成 `target/slam-bird-eye-preview.png`，是**合成环境显示示例**，用于检查绘制，并非实机建图结果。摄像头采集、同步质量、实际精度和实时帧率仍需你的设备与真实标定验证。
 
 默认最多 80 个关键帧，每帧最多约 5000 个下采样深度点。达到上限后继续在已有地图上定位，停止 SLAM 地图扩展和新增回环；窗口会显示容量状态。OCC 仍可在有效定位帧更新滚动局部环境。`slam.maxKeyframes` 可配置为 2–200，但后端采用稠密求解，提高上限会增加耗时。该原型适合短时、有限范围实验，长时间大范围建图还需要关键帧剔除和稀疏优化。
+
+
+## 无参数启动与初始化排查
+
+从项目根目录运行 `StereoSlamDemo.main`，不传参数时使用：
+
+```java
+new String[]{"camera", "docs/slam/raw-example.properties", "0",
+    "target/slam-output", "docs/slam/live-example.properties"};
+```
+
+这是启动示例：设备 0，同步左右并排，单眼 640×480，总帧 1280×480。
+`raw-example.properties` 的 K、D、R、T 是示例数值，必须换成该相机、该分辨率的实测标定。
+对于原始图像使用 `rectified=false`；只有已经校正的图像才能使用对应的 rectified 标定。
+第四个参数始终是输出目录；只有 dataset/dataset-view 的第三个参数才是 manifest 文件。
+显式传入参数优先，无参数默认不会覆盖 IDE/命令行参数。
+
+日志使用 Lombok `@Slf4j`，默认 INFO，状态异常和双目过滤摘要约每两秒输出。
+IDE 的 VM options 可加入 `-Dorg.slf4j.simpleLogger.log.winw.ai.slam=debug` 查看每帧匹配与 PnP 统计。
+控制台重定向可保存完整诊断日志。
+
+- `leftFeatures/rightFeatures` 少：检查纹理、光照、清晰度、曝光和运动模糊。
+- `mutualRatioMatches` 少：检查两眼是否同步、是否为同一场景和画面质量。
+- `rejectVertical` 多：优先检查实测标定和极线校正；默认垂直容差为 1.5 像素。
+- `rejectNonPositiveDisparity` 多：检查左右顺序；核实后设置 `camera.swapEyes=true`，确保标定也对应物理左右眼。
+- `rejectDepth` 多：检查焦距、以米为单位的基线和允许深度范围。
+- `accepted` 少于 20：继续 INITIALIZING；未产生位姿时 OCC 不融合，所以占据/空闲/观测帧为 0。
+
+`meanAbsVertical` 和 `meanDisparity` 是几何过滤前匹配的平均值，仅用于排查，不代表可靠深度。
+不要用放宽阈值代替正确标定。测试使用合成图像，不构成实际摄像头标定或定位验证。
