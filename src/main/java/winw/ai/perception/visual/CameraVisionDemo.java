@@ -13,7 +13,7 @@ import javax.swing.JFrame;
 import com.github.sarxos.webcam.Webcam;
 import com.github.sarxos.webcam.WebcamPanel;
 
-public class StereoVisionDemo implements ActionListener {
+public class CameraVisionDemo implements ActionListener {
 
 	static Webcam webcam;
 
@@ -46,8 +46,10 @@ public class StereoVisionDemo implements ActionListener {
 	}
 
 	public static void main(String[] args) {
+		System.out.println("CAM Total: " +
+				Webcam.getWebcams().size());
 		for (Webcam cam : Webcam.getWebcams()) {
-			System.out.println(
+			System.out.println("CAM: " +
 					cam.getName() + " : " + cam.getViewSize().getHeight() + "," + cam.getViewSize().getWidth());
 		}
 		webcam = Webcam.getWebcams().get(0);
@@ -56,7 +58,7 @@ public class StereoVisionDemo implements ActionListener {
 
 		JButton b = new JButton(new String("photograph".getBytes(), Charset.defaultCharset()));
 		b.setPreferredSize(new Dimension(100, 30));
-		b.addActionListener(new StereoVisionDemo());
+		b.addActionListener(new CameraVisionDemo());
 		WebcamPanel panel = new WebcamPanel(webcam);
 		panel.setFPSDisplayed(true);
 		panel.setDisplayDebugInfo(true);
