@@ -13,9 +13,25 @@ import org.opencv.imgcodecs.Imgcodecs;
 public final class StereoSlamDemo {
     private StereoSlamDemo(){}
     public static void main(String[] args)throws Exception{
+        if(args.length>0&&args[0].equals("camera-auto")){AutoStereoDemo.main(args);return;}
         if(args.length==0){
-            args=new String[]{"camera","docs/slam/raw-example.properties","0","target/slam-output","docs/slam/live-example.properties"};
-            log.warn("Using example calibration: replace K,D,R,T and per-eye dimensions with measured camera calibration before relying on depth/pose.");
+            // IDE 直接运行这里。常用默认参数集中在 main，启动后也可在界面调整。
+            AutoStereoSettings defaults=new AutoStereoSettings();
+            defaults.device=0;                          // 摄像头编号
+            defaults.width=640;defaults.height=480;      // 单眼尺寸；左右拼接总尺寸 1280×480
+            defaults.layout=LiveSlamConfig.Layout.SIDE_BY_SIDE;
+            defaults.swapEyes=false;
+            defaults.backend=0;                        // 0 自动；700 DSHOW；1400 MSMF
+            defaults.fourcc="MJPG";defaults.fps=30;
+            defaults.disparities=128;                  // 16 的倍数，小于单眼宽度的一半
+            defaults.blockSize=5;defaults.uniquenessRatio=12;
+            defaults.features=3500;defaults.validationTolerance=1.5;
+            defaults.observationMillis=500;
+            defaults.record=true;defaults.recordMillis=500;defaults.maxSamples=120;
+            defaults.baselineMm=0;                     // 米制标定前在界面填写实测基线，0 表示未填写
+            defaults.outputDirectory=Paths.get("target/slam-output");
+            defaults.rectificationCache=null;         // 可选：已有自然场景校正缓存
+            AutoStereoDemo.launch(defaults);return;
         }
         log.info("SLAM launch arguments: {}",Arrays.toString(args));
         if(args.length>=4&&(args[0].equals("camera")||args[0].equals("dataset-view"))){LiveStereoSlam.main(args);return;}
