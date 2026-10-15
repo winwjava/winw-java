@@ -15,7 +15,6 @@ final class AutoStereoWindow {
     private final JFrame window=new JFrame("自然场景自适应双目 · 相机与调试设置");
     private final ExecutorService worker=Executors.newSingleThreadExecutor(r->new Thread(r,"auto-stereo-session"));
     private final AtomicReference<AutoStereoDemo.Frame> latest=new AtomicReference<>();
-    private final AtomicReference<Process> process=new AtomicReference<>();
     private final AtomicLong generation=new AtomicLong();
     private volatile boolean closed;
     private AtomicBoolean sessionStop=new AtomicBoolean();
@@ -83,7 +82,7 @@ final class AutoStereoWindow {
     private void clearPreviews(){left.image=null;right.image=null;disparity.image=null;left.repaint();right.repaint();disparity.repaint();}
     private void showError(Exception error){JOptionPane.showMessageDialog(window,error.getMessage(),"参数或运行错误",JOptionPane.ERROR_MESSAGE);}
     private void close(){
-        closed=true;generation.incrementAndGet();sessionStop.set(true);Process running=process.get();if(running!=null)running.destroy();
+        closed=true;generation.incrementAndGet();sessionStop.set(true);
         timer.stop();worker.shutdown();window.dispose();
     }
     private void calibrate(){
@@ -99,33 +98,25 @@ final class AutoStereoWindow {
         // Queued behind capture, so the camera is released and manifest flushed before calibration.
         worker.submit(()->{
             String completion;boolean mapOpened=false;
+            Path log=output.resolve("self-calibration.log");
             try{
                 if(closed)return;
+                CalibrationRuntime.log(log,"Starting calibration; project="+Paths.get("").toAbsolutePath()+"; java="+System.getProperty("java.version"));
                 long pairs;
                 try(java.util.stream.Stream<Path> files=Files.list(output.resolve("images/left"))){pairs=files.filter(p->p.toString().endsWith(".png")).count();}
                 if(pairs<25)throw new IOException("已录制 "+pairs+" 对，需要至少 25 对；请重新启动并录制更多场景");
-                Path project=Paths.get("").toAbsolutePath();Path python=project.resolve("target/scene-calibration-venv/Scripts/python.exe");
-                Path log=output.resolve("self-calibration.log");
-                if(!Files.exists(python)){
-                    progress("首次准备自标定组件…");
-                    command(log,"python","-m","venv",project.resolve("target/scene-calibration-venv").toString());
-                }
-                int dependencies=commandExit(log,python.toString(),"-c","import pycolmap,numpy,cv2; assert pycolmap.__version__ == '4.2.1'");
-                if(dependencies!=0){
-                    progress("首次下载自标定组件，请保持联网；详细进度见 self-calibration.log…");
-                    command(log,python.toString(),"-m","pip","install","-r",project.resolve("docs/slam/self-calibration-requirements.txt").toString());
-                }
-                progress("正在从自然场景估计标定并验证；详细进度见 self-calibration.log…");
+                progress("正在用 Java/OpenCV 估计标定并独立验证…");
                 Path calibration=output.resolve("scene-calibration-"+UUID.randomUUID()+".properties");
-                command(log,python.toString(),project.resolve("docs/slam/self-calibrate.py").toString(),output.toString(),
-                    "--baseline",Double.toString(baseline/1000),"--output",calibration.toString());
+                try(NaturalSceneCalibration estimator=new NaturalSceneCalibration(snapshot.width,snapshot.height,snapshot.features,snapshot.validationTolerance)){
+                    estimator.run(output,baseline/1000,calibration,log,()->closed,this::progress);
+                }
                 if(closed)return;
                 Path live=output.resolve("ui-live.properties");saveCameraSettings(snapshot,live);
                 LiveStereoSlam.main(new String[]{"camera",calibration.toString(),Integer.toString(snapshot.device),output.resolve("metric-slam").toString(),live.toString()});
                 mapOpened=true;
                 completion="自然场景标定通过，已打开米制 SLAM 地图窗口；标定保存在："+calibration;
-            }catch(Exception error){completion="自标定失败："+error.getMessage()+"；原始序列保留，详细原因见 self-calibration.log";error.printStackTrace();}
-            finally{process.set(null);}
+            }catch(Exception error){try{CalibrationRuntime.failure(log,error);}catch(IOException logging){error.addSuppressed(logging);}completion="自标定失败："+error.getMessage()+"；原始序列保留，详细原因见 self-calibration.log";error.printStackTrace();}
+
             String message=completion;boolean transferred=mapOpened;
             SwingUtilities.invokeLater(()->{if(!closed){
                 if(transferred){close();return;} // The map window now owns the camera.
@@ -134,15 +125,6 @@ final class AutoStereoWindow {
         });
     }
     private void progress(String text){SwingUtilities.invokeLater(()->{if(!closed)notice=text;});}
-    private int commandExit(Path log,String... args)throws Exception{
-        if(closed)throw new InterruptedException("窗口已关闭");
-        Process child=new ProcessBuilder(args).redirectErrorStream(true).redirectOutput(ProcessBuilder.Redirect.appendTo(log.toFile())).start();
-        process.set(child);
-        try{if(closed)child.destroy();return child.waitFor();}finally{process.compareAndSet(child,null);}
-    }
-    private void command(Path log,String... args)throws Exception{
-        int exit=commandExit(log,args);if(exit!=0)throw new IOException("处理程序退出码 "+exit);
-    }
     static void saveCameraSettings(AutoStereoSettings s,Path path)throws IOException{
         Properties p=new Properties();p.setProperty("camera.layout",s.layout.name());p.setProperty("camera.swapEyes",Boolean.toString(s.swapEyes));
         p.setProperty("camera.backend",Integer.toString(s.backend));p.setProperty("camera.fourcc",s.fourcc);
