@@ -9,18 +9,8 @@ param(
 )
 $ErrorActionPreference = 'Stop'
 $projectRoot = (Resolve-Path -LiteralPath (Join-Path $PSScriptRoot '../..')).Path
-$pythonPath = Join-Path $projectRoot 'target/scene-calibration-venv/Scripts/python.exe'
 if ($LiveConfig) { $LiveConfig = (Resolve-Path -LiteralPath $LiveConfig).Path }
 if ($SequenceDirectory) { $SequenceDirectory = (Resolve-Path -LiteralPath $SequenceDirectory).Path }
-if (-not (Test-Path -LiteralPath $pythonPath)) {
-    & python -m venv (Join-Path $projectRoot 'target/scene-calibration-venv')
-    if ($LASTEXITCODE -ne 0) { throw 'Cannot create self-calibration Python environment' }
-}
-& $pythonPath -c "import pycolmap, numpy, cv2; assert pycolmap.__version__ == '4.2.1'"
-if ($LASTEXITCODE -ne 0) {
-    & $pythonPath -m pip install -r (Join-Path $PSScriptRoot 'self-calibration-requirements.txt')
-    if ($LASTEXITCODE -ne 0) { throw 'Cannot install self-calibration dependencies' }
-}
 if (-not $SequenceDirectory) {
     $captureRoot = Join-Path $projectRoot ('target/scene-session-' + [guid]::NewGuid().ToString('N'))
     Write-Host 'Capture: slowly translate sideways and up/down, with gentle rotations. Keep the scene static. Record at least 25 pairs, preferably 80-120. Stop, then close the preview to begin calibration.'
@@ -34,7 +24,14 @@ if (-not $SequenceDirectory) {
 $calibrationPath = Join-Path $SequenceDirectory ('scene-calibration-' + [guid]::NewGuid().ToString('N') + '.properties')
 # Pass numbers using invariant culture, independent of Windows regional settings.
 $baselineText = $BaselineMetres.ToString('R', [System.Globalization.CultureInfo]::InvariantCulture)
-& $pythonPath (Join-Path $PSScriptRoot 'self-calibrate.py') $SequenceDirectory --baseline $baselineText --output $calibrationPath
+Push-Location -LiteralPath $projectRoot
+try {
+    & mvn -q compile dependency:build-classpath '-Dmdep.outputFile=target/slam-classpath.txt'
+    if ($LASTEXITCODE -ne 0) { throw 'Maven build failed' }
+    $runtimeClasspath = (Join-Path $projectRoot 'target/classes') + [IO.Path]::PathSeparator + (Get-Content -Raw 'target/slam-classpath.txt').Trim()
+    & java -cp $runtimeClasspath winw.ai.slam.NaturalSceneCalibration $SequenceDirectory $baselineText $calibrationPath $EyeWidth $EyeHeight
+    if ($LASTEXITCODE -ne 0) { throw 'Java/OpenCV natural-scene calibration failed; see self-calibration.log in sequence directory' }
+} finally { Pop-Location }
 if ($LASTEXITCODE -ne 0) { throw 'Natural-scene calibration failed quality checks; metric SLAM was not started. Original sequence is preserved.' }
 Write-Host "Natural-scene calibration: $calibrationPath"
 if (-not $CalibrationOnly) {
