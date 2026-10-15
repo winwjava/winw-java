@@ -28,26 +28,47 @@ public final class NaturalSceneCalibration implements AutoCloseable {
     private final int width,height;
     private final double tolerance;
     private final ORB orb;
+    private final ORB lowContrastOrb;
+    private final SIFT sift;
+    private final org.opencv.imgproc.CLAHE contrast=org.opencv.imgproc.Imgproc.createCLAHE(2,new Size(8,8));
     private final BFMatcher matcher=BFMatcher.create(Core.NORM_HAMMING,false);
+    private final BFMatcher siftMatcher=BFMatcher.create(Core.NORM_L2,false);
     private final List<Features> owned=new ArrayList<>();
     NaturalSceneCalibration(int width,int height,int features,double tolerance){
         this.width=width;this.height=height;this.tolerance=tolerance;orb=ORB.create(features);
+        lowContrastOrb=ORB.create(features);lowContrastOrb.setFastThreshold(7);
+        sift=SIFT.create(Math.min(3000,features),3,.015,10,1.6);
     }
     static final class Features implements AutoCloseable {
         final Mat descriptors=new Mat(),image=new Mat();final MatOfKeyPoint keys=new MatOfKeyPoint();
+        final Mat siftDescriptors=new Mat();final MatOfKeyPoint siftKeys=new MatOfKeyPoint();
+        boolean siftReady;String extraction="ORB";
+        int originalFeatures;
         double brightness,sharpness;
-        public void close(){descriptors.release();keys.release();image.release();}
+        public void close(){descriptors.release();keys.release();image.release();siftDescriptors.release();siftKeys.release();}
     }
     static final class Matches {
+        String method="ORB";
         final List<Point> a=new ArrayList<>(),b=new ArrayList<>();
         void add(Matches other,int limit){int step=Math.max(1,(other.a.size()+limit-1)/limit);
             for(int i=0;i<other.a.size();i+=step){a.add(other.a.get(i));b.add(other.b.get(i));}}
     }
     private Features features(Path file)throws IOException{
-        Mat image=Imgcodecs.imread(file.toString(),Imgcodecs.IMREAD_GRAYSCALE),mask=new Mat();
+        Mat image=Imgcodecs.imread(file.toString(),Imgcodecs.IMREAD_GRAYSCALE);
+        try{return features(image);}catch(IOException error){throw new IOException(file+": "+error.getMessage(),error);}finally{image.release();}
+    }
+    Features features(Mat image)throws IOException{
+        Mat mask=new Mat();
         Features f=new Features();owned.add(f);
-        try{if(image.empty()||image.cols()!=width||image.rows()!=height)throw new IOException("原始图像缺失或尺寸不一致："+file);
+        try{if(image.empty()||image.cols()!=width||image.rows()!=height)throw new IOException("原始图像缺失或尺寸不一致");
             orb.detectAndCompute(image,mask,f.keys,f.descriptors);
+            f.originalFeatures=f.descriptors.rows();
+            if(f.descriptors.rows()<Math.max(500,orb.getMaxFeatures()/3)){
+                Mat enhanced=new Mat(),descriptors=new Mat();MatOfKeyPoint keys=new MatOfKeyPoint();
+                try{contrast.apply(image,enhanced);lowContrastOrb.detectAndCompute(enhanced,mask,keys,descriptors);
+                    if(descriptors.rows()>f.descriptors.rows()){keys.copyTo(f.keys);descriptors.copyTo(f.descriptors);f.extraction="CLAHE+ORB-fast7";}
+                }finally{enhanced.release();descriptors.release();keys.release();}
+            }
             double scale=Math.min(1,960.0/Math.max(width,height));
             org.opencv.imgproc.Imgproc.resize(image,f.image,new Size(Math.round(width*scale),Math.round(height*scale)),0,0,org.opencv.imgproc.Imgproc.INTER_AREA);
             Mat laplacian=new Mat();MatOfDouble mean=new MatOfDouble(),deviation=new MatOfDouble();
@@ -56,15 +77,40 @@ public final class NaturalSceneCalibration implements AutoCloseable {
                 f.sharpness=sigma*sigma;f.brightness=Core.mean(image).val[0];
             }finally{laplacian.release();mean.release();deviation.release();}
             return f;
-        }finally{image.release();mask.release();}
+        }finally{mask.release();}
     }
     private Matches match(Features a,Features b){
-        Matches result=new Matches();if(a.descriptors.rows()<2||b.descriptors.rows()<2)return result;
+        return match(a.descriptors,b.descriptors,a.keys.toArray(),b.keys.toArray(),matcher,"ORB");
+    }
+    private void ensureSift(Features f){
+        if(f.siftReady)return;
+        Mat enhanced=new Mat(),mask=new Mat();
+        try{contrast.apply(f.image,enhanced);sift.detectAndCompute(enhanced,mask,f.siftKeys,f.siftDescriptors);
+            KeyPoint[] points=f.siftKeys.toArray();for(KeyPoint p:points){p.pt.x*=((double)width/f.image.cols());p.pt.y*=((double)height/f.image.rows());}
+            f.siftKeys.fromArray(points);f.siftReady=true;
+        }finally{enhanced.release();mask.release();}
+    }
+    private Matches siftMatch(Features a,Features b){
+        ensureSift(a);ensureSift(b);
+        return match(a.siftDescriptors,b.siftDescriptors,a.siftKeys.toArray(),b.siftKeys.toArray(),siftMatcher,"CLAHE+SIFT");
+    }
+    Matches stereoMatch(Features a,Features b){
+        Matches result=match(a,b);
+        if(result.a.size()>=80&&coverage(result.a)&&coverage(result.b))return result;
+        Matches fallback=siftMatch(a,b);
+        // Selection uses descriptors/coverage only, never the calibration being validated.
+        int coverage=Math.min(coverageCells(result.a),coverageCells(result.b));
+        int fallbackCoverage=Math.min(coverageCells(fallback.a),coverageCells(fallback.b));
+        if(fallback.a.size()>=60&&fallbackCoverage>=8&&(result.a.size()<60||coverage<8))return fallback;
+        if(fallbackCoverage>=coverage&&fallback.a.size()>result.a.size())return fallback;
+        return result;
+    }
+    private static Matches match(Mat ad,Mat bd,KeyPoint[] ak,KeyPoint[] bk,BFMatcher matcher,String method){
+        Matches result=new Matches();result.method=method;if(ad.rows()<2||bd.rows()<2)return result;
         List<MatOfDMatch> forward=new ArrayList<>(),reverse=new ArrayList<>();
-        try{matcher.knnMatch(a.descriptors,b.descriptors,forward,2);matcher.knnMatch(b.descriptors,a.descriptors,reverse,2);
-            int[] back=new int[b.descriptors.rows()];Arrays.fill(back,-1);
+        try{matcher.knnMatch(ad,bd,forward,2);matcher.knnMatch(bd,ad,reverse,2);
+            int[] back=new int[bd.rows()];Arrays.fill(back,-1);
             for(MatOfDMatch row:reverse){DMatch[] m=row.toArray();if(m.length==2&&m[0].distance<.75*m[1].distance)back[m[0].queryIdx]=m[0].trainIdx;}
-            KeyPoint[] ak=a.keys.toArray(),bk=b.keys.toArray();
             for(MatOfDMatch row:forward){DMatch[] m=row.toArray();if(m.length==2&&m[0].distance<.75*m[1].distance&&back[m[0].trainIdx]==m[0].queryIdx){
                 result.a.add(ak[m[0].queryIdx].pt);result.b.add(bk[m[0].trainIdx].pt);}}
             return result;
@@ -127,6 +173,10 @@ public final class NaturalSceneCalibration implements AutoCloseable {
                 f=fundamental(points);
                 logGeometry(log,label,"LK-forward-backward",points,started,counts);
             }
+            if(f.empty()&&near){
+                f.release();started=System.nanoTime();points=siftMatch(a,b);f=fundamental(points);
+                logGeometry(log,label,points.method,points,started,counts);
+            }
             return f;
         }catch(IOException|RuntimeException error){f.release();throw error;}
     }
@@ -163,7 +213,7 @@ public final class NaturalSceneCalibration implements AutoCloseable {
     static RealMatrix intrinsic(double focal,int width,int height){return MatrixUtils.createRealMatrix(new double[][]{{focal,0,width/2.},{0,focal,height/2.},{0,0,1}});}
     private static RealMatrix matrix(Mat m){double[][] v=new double[m.rows()][m.cols()];for(int i=0;i<m.rows();i++)for(int j=0;j<m.cols();j++)v[i][j]=m.get(i,j)[0];return MatrixUtils.createRealMatrix(v);}
     private static Mat mat(RealMatrix matrix){Mat m=new Mat(matrix.getRowDimension(),matrix.getColumnDimension(),CvType.CV_64F);for(int i=0;i<m.rows();i++)m.put(i,0,matrix.getRow(i));return m;}
-    private static double score(List<RealMatrix> fundamentals,double focal,int w,int h){
+    static double score(List<RealMatrix> fundamentals,double focal,int w,int h){
         RealMatrix k=intrinsic(focal,w,h);double[] errors=new double[fundamentals.size()];int i=0;
         for(RealMatrix f:fundamentals){double[] s=new SingularValueDecomposition(k.transpose().multiply(f).multiply(k)).getSingularValues();
             errors[i++]=Math.pow((s[0]-s[1])/Math.max(1e-15,s[0]+s[1]),2);}
@@ -204,10 +254,16 @@ public final class NaturalSceneCalibration implements AutoCloseable {
         List<Features> left=new ArrayList<>(),right=new ArrayList<>();List<Matches> stereo=new ArrayList<>();
         for(int i=0;i<count;i++){check(cancelled);progress.accept("Java/OpenCV 提取特征 "+(i+1)+"/"+count);
             left.add(features(sequence.resolve("images/left").resolve(selected.get(i))));right.add(features(sequence.resolve("images/right").resolve(selected.get(i))));
-            stereo.add(match(left.get(i),right.get(i)));
+            stereo.add(stereoMatch(left.get(i),right.get(i)));
             Features l=left.get(i),r=right.get(i);
-            CalibrationRuntime.log(log,String.format(Locale.ROOT,"FRAME %s heldout=%s features=%d,%d stereoMatches=%d brightness=%.1f,%.1f laplacianVariance=%.1f,%.1f",
-                selected.get(i),i%5==0,l.descriptors.rows(),r.descriptors.rows(),stereo.get(i).a.size(),l.brightness,r.brightness,l.sharpness,r.sharpness));}
+            CalibrationRuntime.log(log,String.format(Locale.ROOT,"FRAME %s heldout=%s features=%d,%d stereoMatches=%d brightness=%.1f,%.1f laplacianVariance=%.1f,%.1f extraction=%s,%s stereoMethod=%s siftFeatures=%d,%d rawORB=%d,%d",
+                selected.get(i),i%5==0,l.descriptors.rows(),r.descriptors.rows(),stereo.get(i).a.size(),l.brightness,r.brightness,l.sharpness,r.sharpness,l.extraction,r.extraction,stereo.get(i).method,l.siftDescriptors.rows(),r.siftDescriptors.rows(),l.originalFeatures,r.originalFeatures));}
+        int sufficientStereo=0,sufficientHeldout=0;double[] stereoCounts=new double[count];
+        for(int i=0;i<count;i++){Matches m=stereo.get(i);stereoCounts[i]=m.a.size();
+            if(m.a.size()>=60&&coverage(m.a)&&coverage(m.b)){sufficientStereo++;if(i%5==0)sufficientHeldout++;}}
+        Arrays.sort(stereoCounts);
+        CalibrationRuntime.log(log,"STEREO_SUMMARY pairs="+count+" medianMatches="+stereoCounts[count/2]+" sufficientMatchesAndCoverage="+sufficientStereo
+            +" eligibleHeldout="+sufficientHeldout+"/"+((count+4)/5)+"; eligibility uses descriptors only, final geometry still unverified");
         List<RealMatrix> fl=new ArrayList<>(),fr=new ArrayList<>();Matches pooled=new Matches();int training=0;
         progress.accept("Java/OpenCV 跨时刻匹配与退化检查…");
         for(int i=0;i<count;i++)if(i%5!=0){pooled.add(stereo.get(i),250);training++;}
@@ -219,37 +275,21 @@ public final class NaturalSceneCalibration implements AutoCloseable {
                 String label="eye="+(eye==0?"left":"right")+" from="+selected.get(i)+" to="+selected.get(j);
                 boolean near=names.indexOf(selected.get(j))-names.indexOf(selected.get(i))<=3;
                 Mat f=temporalGeometry(frames.get(i),frames.get(j),label,near,log,eye==0?leftCounts:rightCounts);
-                try{if(!f.empty())(eye==0?fl:fr).add(matrix(f));}finally{f.release();}
+                try{if(!f.empty()){(eye==0?fl:fr).add(matrix(f));CalibrationRuntime.log(log,"CONSTRAINT "+label+" F="+text(f));}}finally{f.release();}
             }
             progress.accept("Java/OpenCV 时序匹配 "+(++completed)+"/"+candidates.size()+"；有效约束 左 "+fl.size()+" / 右 "+fr.size());
         }
         CalibrationRuntime.log(log,"TEMPORAL_SUMMARY candidatesPerEye="+candidates.size()+" acceptedLeft="+fl.size()+" acceptedRight="+fr.size()+" left="+leftCounts+" right="+rightCounts);
         if(fl.size()<6||fr.size()<6)throw new IOException("时序几何约束不足：左 "+fl.size()+" / 右 "+fr.size()+"（各需至少 6）；具体筛选原因已输出到控制台和 self-calibration.log");
         check(cancelled);progress.accept("Java/OpenCV 多帧焦距估计与双目位姿恢复…");
-        double lf=estimateFocal(fl,width,height,log,"left"),rf=estimateFocal(fr,width,height,log,"right");
+
         long stereoStarted=System.nanoTime();Mat f=fundamental(pooled);
-        try{logGeometry(log,"stereo-pooled","ORB",pooled,stereoStarted,new TreeMap<>());}catch(IOException error){f.release();throw error;}
+        try{logGeometry(log,"stereo-pooled","ORB-or-SIFT",pooled,stereoStarted,new TreeMap<>());}catch(IOException error){f.release();throw error;}
         if(f.empty()){f.release();throw new IOException("双目几何估计被拒绝："+geometryReason);}
-        // Stereo geometry tightly constrains the focal ratio. Refine both eyes together
-        // instead of allowing independent temporal estimation noise to tilt the baseline.
-        RealMatrix stereoF=matrix(f);
-        final double initialLeft=lf,initialRight=rf;
-        try{
-            org.apache.commons.math3.optim.nonlinear.scalar.noderiv.BOBYQAOptimizer optimizer=new org.apache.commons.math3.optim.nonlinear.scalar.noderiv.BOBYQAOptimizer(5,10,1e-5);
-            org.apache.commons.math3.optim.PointValuePair solution=optimizer.optimize(
-                new org.apache.commons.math3.optim.MaxEval(500),
-                new org.apache.commons.math3.optim.InitialGuess(new double[]{lf,rf}),
-                new org.apache.commons.math3.optim.SimpleBounds(new double[]{lf*.8,rf*.8},new double[]{lf*1.2,rf*1.2}),
-                org.apache.commons.math3.optim.nonlinear.scalar.GoalType.MINIMIZE,
-                new org.apache.commons.math3.optim.nonlinear.scalar.ObjectiveFunction(x->{
-                    RealMatrix essential=intrinsic(x[1],width,height).transpose().multiply(stereoF).multiply(intrinsic(x[0],width,height));
-                    double[] singular=new SingularValueDecomposition(essential).getSingularValues();
-                    double mismatch=(singular[0]-singular[1])/(singular[0]+singular[1]);
-                    return score(fl,x[0],width,height)+score(fr,x[1],width,height)+20*mismatch*mismatch;
-                }));
-            lf=solution.getPoint()[0];rf=solution.getPoint()[1];
-        }catch(org.apache.commons.math3.exception.MathIllegalStateException failure){f.release();throw new IOException("联合焦距优化未收敛",failure);}
-        if(lf<initialLeft*.81||lf>initialLeft*1.19||rf<initialRight*.81||rf>initialRight*1.19){f.release();throw new IOException("联合焦距优化到达边界，需更丰富的相机运动");}
+        double[] focal;
+        try{CalibrationRuntime.log(log,"STEREO_CONSTRAINT F="+text(f));focal=JointFocalEstimator.estimate(fl,fr,matrix(f),width,height,log);}
+        catch(IOException|RuntimeException error){f.release();throw error;}
+        double lf=focal[0],rf=focal[1];
         CalibrationRuntime.log(log,"training pairs="+training+"; temporal constraints="+fl.size()+","+fr.size()+"; focal="+lf+","+rf);
         Mat kl=mat(intrinsic(lf,width,height)),kr=mat(intrinsic(rf,width,height)),d=Mat.zeros(1,5,CvType.CV_64F);
         Mat r=new Mat(),t=new Mat(),e=null,identity=Mat.eye(3,3,CvType.CV_64F),poseMask=new Mat();
@@ -285,6 +325,7 @@ public final class NaturalSceneCalibration implements AutoCloseable {
                 boolean ok=Double.isFinite(error)&&error<=tolerance&&positive>=.85;if(ok)passed++;
                 CalibrationRuntime.log(log,"HELDOUT "+selected.get(i)+" matches="+m.a.size()+" verticalP80="+error+" positive="+positive+" passed="+ok);
             }
+            CalibrationRuntime.log(log,"VALIDATION_SUMMARY passed="+passed+" total="+total+" tolerance="+tolerance);
             if(passed<3||passed<.6*total)throw new IOException("独立验证仅通过 "+passed+"/"+total+"，未导出标定；请增加场景纹理与运动，明显畸变需提供实测标定");
             check(cancelled);Properties p=new Properties();p.setProperty("rectified","false");p.setProperty("width",""+width);p.setProperty("height",""+height);
             p.setProperty("left.K",text(kl));p.setProperty("right.K",text(kr));p.setProperty("left.D",text(d));p.setProperty("right.D",text(d));p.setProperty("R",text(r));p.setProperty("T",text(t));
