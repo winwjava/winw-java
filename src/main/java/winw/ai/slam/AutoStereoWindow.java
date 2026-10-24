@@ -12,7 +12,7 @@ import javax.swing.*;
 
 /** Settings stay on the EDT; camera sessions and calibration jobs run sequentially on one worker. */
 final class AutoStereoWindow {
-    private final JFrame window=new JFrame("自然场景自适应双目 · 相机与调试设置");
+    private final JFrame window=new JFrame("实时双目自动匹配 · 相机与调试设置");
     private final ExecutorService worker=Executors.newSingleThreadExecutor(r->new Thread(r,"auto-stereo-session"));
     private final AtomicReference<AutoStereoDemo.Frame> latest=new AtomicReference<>();
     private final AtomicLong generation=new AtomicLong();
@@ -23,9 +23,9 @@ final class AutoStereoWindow {
     private String notice;
     private boolean calibrating;
     private final Controls controls;
-    private final JLabel status=new JLabel("缓慢移动相机，对准有纹理和远近层次的静态场景");
+    private final JLabel status=new JLabel("相机启动后自动匹配并显示视差，无需录制或离线标定");
     private final JLabel location=new JLabel(" ");
-    private final JButton apply=new JButton("应用并重启相机"),stop=new JButton("停止并保存"),calibrate=new JButton("自然场景标定并启动地图");
+    private final JButton apply=new JButton("应用并重启相机"),stop=new JButton("停止并保存"),calibrate=new JButton("高级：离线米制自标定");
     private final Preview left=new Preview("左图"),right=new Preview("右图"),disparity=new Preview("视差 / 像素（不表示米）");
     private final javax.swing.Timer timer;
 
@@ -38,6 +38,7 @@ final class AutoStereoWindow {
         JButton folder=new JButton("打开本次输出目录");buttons.add(folder);header.add(buttons,BorderLayout.SOUTH);
         apply.addActionListener(e->{try{restart(controls.read());}catch(Exception error){showError(error);}});
         stop.addActionListener(e->{sessionStop.set(true);stop.setEnabled(false);notice="正在停止采集并保存…";});
+        calibrate.setToolTipText("仅用于尝试米制 SLAM；实时视差无需点击此按钮");
         calibrate.addActionListener(e->calibrate());
         folder.addActionListener(e->{try{if(currentOutput!=null)Desktop.getDesktop().open(currentOutput.toFile());}
             catch(Exception error){showError(error);}});
@@ -164,7 +165,7 @@ final class AutoStereoWindow {
             values.add(swap);values.add(record);add(values,BorderLayout.CENTER);
             JPanel paths=new JPanel(new GridLayout(2,1,0,4));
             paths.add(pathRow("输出目录",output,true));paths.add(pathRow("校正缓存（可选）",cache,false));add(paths,BorderLayout.SOUTH);
-            setBorder(BorderFactory.createTitledBorder("参数设置：修改后点击“应用并重启相机”；米制地图须填写实测基线"));
+            setBorder(BorderFactory.createTitledBorder("实时匹配无需录制和基线；修改参数后点击“应用并重启相机”"));
         }
         AutoStereoSettings read(){
             // Commit typed spinner text too, not only values entered with arrow buttons.

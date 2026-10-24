@@ -8,7 +8,7 @@ public final class AutoStereoSettings {
     public int features=3500,blockSize=5,uniquenessRatio=12;
     public int observationMillis=500,recordMillis=500,maxSamples=120;
     public double fps=30,validationTolerance=1.5,baselineMm=0;
-    public boolean swapEyes=false,record=true;
+    public boolean swapEyes=false,record=false;
     public LiveSlamConfig.Layout layout=LiveSlamConfig.Layout.SIDE_BY_SIDE;
     public String fourcc="MJPG";
     public Path outputDirectory=Paths.get("target/slam-output"),rectificationCache;

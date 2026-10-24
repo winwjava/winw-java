@@ -1,6 +1,6 @@
 # Java 双目 SLAM
 
-无标定文件的普通双目相机可使用 [自然场景自标定入口](AUTO-CALIBRATION.md)：`camera-auto` 自动校正和显示像素视差；`run-auto-slam.ps1` 用自然场景序列估计标定，通过验证后接入米制 SLAM，不需要棋盘格。
+无标定文件的双目相机可直接使用 [实时自动匹配入口](AUTO-CALIBRATION.md)：`camera-auto` 启动后自动对齐并显示像素视差，无需录制照片或填写基线，录制默认关闭。需要米制 SLAM 时，可另外使用已有标定或高级离线自标定。
 
 本次新增独立包 `winw.ai.slam`，实现可运行的稀疏双目 SLAM 原型。算法调度、几何建模、地图管理及位姿图优化由 Java 实现；特征提取、匹配和 PnP 使用项目已有的 OpenCV JNI，因此运行时仍需要本地 OpenCV 库。
 

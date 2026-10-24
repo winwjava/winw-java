@@ -65,7 +65,7 @@ public final class AutoStereoDemo {
                     finally{gl.release();gr.release();}
                 }else{l.copyTo(rl);r.copyTo(rr);}
                 latest.set(new Frame(rl,rr,visual,String.format(Locale.ROOT,"%s | 匹配 %d / 内点 %d / 验证误差 %.2f px | 已录制 %d/%d 对%s",
-                    rectifier.status,rectifier.matches,rectifier.inliers,rectifier.verticalError,samples,settings.maxSamples,settings.record?"":"（录制关闭）")));
+                    rectifier.status+" / "+rectifier.matchingMethod,rectifier.matches,rectifier.inliers,rectifier.verticalError,samples,settings.maxSamples,settings.record?"":"（录制关闭）")));
             }
         }finally{for(Mat m:new Mat[]{l,r,rl,rr,disparity,visual,lm,rm})m.release();}
     }

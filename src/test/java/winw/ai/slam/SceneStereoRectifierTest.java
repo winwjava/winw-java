@@ -20,7 +20,7 @@ public class SceneStereoRectifierTest {
         }
         @SuppressWarnings("unchecked") List<Point>[] points=new List[]{l,r};return points;
     }
-    @Test public void perspectiveGeometryNeedsSubsequentFramesAndRejectsLoss(){
+    @Test public void perspectiveGeometryNeedsSubsequentFramesAndSurvivesTextureLoss(){
         try(SceneStereoRectifier rectifier=new SceneStereoRectifier(640,480)){
             for(int i=0;i<3;i++){
                 List<Point>[] points=correspondences(170+i,false);
@@ -32,14 +32,15 @@ public class SceneStereoRectifierTest {
             try{rectifier.rectify(image,image,l,r);assertEquals(640,l.cols());assertTrue(Core.countNonZero(l)>640*480*.55);}
             finally{image.release();l.release();r.release();}
             for(int i=0;i<3;i++)rectifier.estimate(Collections.emptyList(),Collections.emptyList());
-            assertFalse(rectifier.ready());
+            assertTrue(rectifier.status,rectifier.ready());
         }
     }
-    @Test public void rejectsPlanarAndPoorlyDistributedScenes(){
+    @Test public void supportsPlanarPreviewButRejectsPoorlyDistributedScenes(){
         try(SceneStereoRectifier rectifier=new SceneStereoRectifier(640,480)){
             List<Point>[] plane=correspondences(42,true);
             assertFalse(rectifier.estimate(plane[0],plane[1]));assertFalse(rectifier.ready());
-            assertTrue(rectifier.status,rectifier.status.contains("平面"));
+            for(int i=0;i<2;i++)rectifier.estimate(plane[0],plane[1]);
+            assertTrue(rectifier.status,rectifier.ready());
             List<Point>[] narrow=correspondences(21,false);
             for(Point p:narrow[0]){p.x=300+(p.x-320)*.05;p.y=220+(p.y-240)*.05;}
             assertFalse(rectifier.estimate(narrow[0],narrow[1]));
@@ -104,6 +105,43 @@ public class SceneStereoRectifierTest {
                 }
                 assertEquals(rectifier.status,!corrupt,rectifier.ready());
             }
+        }
+    }
+    @Test public void lowContrastPreviewStartsWithoutRecordingOrCalibration(){
+        AutoStereoSettings settings=new AutoStereoSettings();assertFalse(settings.record);
+        assertEquals(0,settings.baselineMm,0);
+        Mat l=new Mat(480,640,CvType.CV_8UC1),r=new Mat(),transform=Mat.eye(2,3,CvType.CV_64F);
+        try(SceneStereoRectifier rectifier=new SceneStereoRectifier(640,480)){
+            Core.setRNGSeed(517);Core.randu(l,0,255);
+            org.opencv.imgproc.Imgproc.GaussianBlur(l,l,new Size(5,5),1);
+            l.convertTo(l,-1,.12,90);transform.put(0,2,-17);transform.put(1,2,3);
+            org.opencv.imgproc.Imgproc.warpAffine(l,r,transform,l.size());
+            for(int i=0;i<3;i++)rectifier.observe(l,r);
+            assertTrue(rectifier.status,rectifier.ready());
+            assertTrue(rectifier.verticalError<1.5);
+            Mat blank=Mat.zeros(480,640,CvType.CV_8UC1);
+            try{for(int i=0;i<5;i++)rectifier.observe(blank,blank);assertTrue(rectifier.ready());}
+            finally{blank.release();}
+        }finally{l.release();r.release();transform.release();}
+    }
+    @Test public void verticalAffineAlignmentPreservesHorizontalParallax(){
+        try(SceneStereoRectifier rectifier=new SceneStereoRectifier(640,480)){
+            for(int frame=0;frame<3;frame++){
+                List<Point> l=new ArrayList<>(),r=new ArrayList<>();
+                for(int i=0;i<100;i++){
+                    double x=60+(i%10)*53,y=60+(i/10)*37,disparity=8+i%7*3;
+                    l.add(new Point(x,y));r.add(new Point(x-disparity,(y-.035*(x-disparity)-4)/1.025));
+                }
+                rectifier.estimate(l,r);
+            }
+            assertTrue(rectifier.status,rectifier.ready());
+            Mat image=new Mat(480,640,CvType.CV_8UC1,new Scalar(0)),left=new Mat(),right=new Mat();
+            try{
+                image.put(200,300,new byte[]{(byte)255});rectifier.rectify(image,image,left,right);
+                Core.MinMaxLocResult peak=Core.minMaxLoc(right);
+                assertEquals(300,peak.maxLoc.x,0);
+                assertEquals(.035*300+1.025*200+4,peak.maxLoc.y,1);
+            }finally{image.release();left.release();right.release();}
         }
     }
     @Test public void sparseUnrelatedPointsDoNotEnableDisparity(){

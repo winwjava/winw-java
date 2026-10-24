@@ -11,6 +11,10 @@ import org.opencv.imgproc.Imgproc;
 /** Targetless projective rectification. Homographies are NOT metric camera calibration. */
 public final class SceneStereoRectifier implements AutoCloseable {
     private final ORB orb;
+    private final SIFT sift;
+    private final BFMatcher siftMatcher=BFMatcher.create(Core.NORM_L2,false);
+    private final org.opencv.imgproc.CLAHE contrast=Imgproc.createCLAHE(2,new Size(8,8));
+    public String matchingMethod="ORB";
     private final BFMatcher matcher=BFMatcher.create(Core.NORM_HAMMING,false);
     private final int width,height;
     private final double validationTolerance;
@@ -28,7 +32,7 @@ public final class SceneStereoRectifier implements AutoCloseable {
         if(width<160||height<120)throw new IllegalArgumentException("Per-eye size must be at least 160x120");
         if(features<500||features>20000||!Double.isFinite(validationTolerance)||validationTolerance<.25||validationTolerance>5)
             throw new IllegalArgumentException("Invalid feature count or validation tolerance");
-        this.width=width;this.height=height;this.validationTolerance=validationTolerance;orb=ORB.create(features);orb.setFastThreshold(10);
+        this.width=width;this.height=height;this.validationTolerance=validationTolerance;orb=ORB.create(features);orb.setFastThreshold(10);sift=SIFT.create(Math.min(features,3000),3,.015,10,1.6);
     }
     public boolean ready(){return trusted;}
     public int minimumDisparity(){return (int)Math.floor(minimumDisparity)-16;}
@@ -72,28 +76,86 @@ public final class SceneStereoRectifier implements AutoCloseable {
         MatOfKeyPoint lk=new MatOfKeyPoint(),rk=new MatOfKeyPoint();
         List<MatOfDMatch> forward=new ArrayList<>(),reverse=new ArrayList<>();
         try{
+            Mat enhanced=new Mat();
+            try{contrast.apply(l,enhanced);enhanced.copyTo(l);contrast.apply(r,enhanced);enhanced.copyTo(r);}
+            finally{enhanced.release();}
             orb.detectAndCompute(l,mask,lk,ld);orb.detectAndCompute(r,mask,rk,rd);
-            if(ld.empty()||rd.empty())return reject("纹理不足，请对准书架或有远近层次的物体");
-            matcher.knnMatch(ld,rd,forward,2);matcher.knnMatch(rd,ld,reverse,2);
+            matchingMethod="CLAHE+ORB";
+            // Select one descriptor family before estimating, so a failed ORB attempt
+            // cannot reset the SIFT candidate's cross-frame confirmations.
+            if(ld.rows()<60||rd.rows()<60){
+                sift.detectAndCompute(l,mask,lk,ld);sift.detectAndCompute(r,mask,rk,rd);
+                matchingMethod="CLAHE+SIFT";
+            }
+            if(ld.empty()||rd.empty())return unavailable("当前纹理不足");
+            BFMatcher selected=matchingMethod.endsWith("SIFT")?siftMatcher:matcher;
+            selected.knnMatch(ld,rd,forward,2);selected.knnMatch(rd,ld,reverse,2);
             int[] back=new int[rd.rows()];Arrays.fill(back,-1);
             for(MatOfDMatch row:reverse){DMatch[] m=row.toArray();if(m.length==2&&m[0].distance<.75*m[1].distance)back[m[0].queryIdx]=m[0].trainIdx;}
             KeyPoint[] a=lk.toArray(),b=rk.toArray();List<Point> lp=new ArrayList<>(),rp=new ArrayList<>();
             for(MatOfDMatch row:forward){DMatch[] m=row.toArray();if(m.length==2&&m[0].distance<.75*m[1].distance&&back[m[0].trainIdx]==m[0].queryIdx){
                 lp.add(a[m[0].queryIdx].pt);rp.add(b[m[0].trainIdx].pt);}}
+            if(lp.size()<40&&!matchingMethod.endsWith("SIFT")){
+                sift.detectAndCompute(l,mask,lk,ld);sift.detectAndCompute(r,mask,rk,rd);
+                List<Point> sl=new ArrayList<>(),sr=new ArrayList<>();
+                if(ld.rows()>=2&&rd.rows()>=2)descriptorMatches(ld,rd,lk,rk,sl,sr);
+                if(sl.size()>lp.size()){lp=sl;rp=sr;matchingMethod="CLAHE+SIFT";}
+            }
             matches=lp.size();return estimate(lp,rp);
         }finally{for(Mat m:new Mat[]{l,r,ld,rd,mask,lk,rk})m.release();
             for(MatOfDMatch m:forward)m.release();for(MatOfDMatch m:reverse)m.release();}
     }
+    private void descriptorMatches(Mat ld,Mat rd,MatOfKeyPoint lk,MatOfKeyPoint rk,List<Point> lp,List<Point> rp){
+        List<MatOfDMatch> f=new ArrayList<>(),r=new ArrayList<>();
+        try{
+            siftMatcher.knnMatch(ld,rd,f,2);siftMatcher.knnMatch(rd,ld,r,2);
+            int[] back=new int[rd.rows()];Arrays.fill(back,-1);
+            for(MatOfDMatch row:r){DMatch[] m=row.toArray();if(m.length==2&&m[0].distance<.75*m[1].distance)back[m[0].queryIdx]=m[0].trainIdx;}
+            KeyPoint[] a=lk.toArray(),b=rk.toArray();
+            for(MatOfDMatch row:f){DMatch[] m=row.toArray();if(m.length==2&&m[0].distance<.75*m[1].distance&&back[m[0].trainIdx]==m[0].queryIdx){
+                lp.add(a[m[0].queryIdx].pt);rp.add(b[m[0].trainIdx].pt);}}
+        }finally{for(Mat row:f)row.release();for(Mat row:r)row.release();}
+    }
+    private boolean unavailable(String reason){
+        status=reason+(trusted?"；沿用已验证对齐，继续视差":"；正在自动寻找匹配");return false;
+    }
     // Package-visible geometric entry point allows testing real perspective camera correspondences.
     boolean estimate(List<Point> left,List<Point> right){
         matches=left.size();inliers=0;verticalError=Double.NaN;
-        if(left.size()!=right.size()||left.size()<8)return reject("有效匹配不足（需要至少 8 对），请让特征分散在画面中");
+        if(left.size()!=right.size())throw new IllegalArgumentException("Mismatched correspondence counts");
+        if(left.size()<8)return unavailable("有效匹配不足 8 对");
         List<Point> trainL=new ArrayList<>(),trainR=new ArrayList<>(),testL=new ArrayList<>(),testR=new ArrayList<>();
         for(int i=0;i<left.size();i++){boolean test=i%4==0;
             (test?testL:trainL).add(left.get(i));(test?testR:trainR).add(right.get(i));}
         MatOfPoint2f a=new MatOfPoint2f(),b=new MatOfPoint2f(),il=new MatOfPoint2f(),ir=new MatOfPoint2f();
         Mat mask=new Mat(),f=null,h1=new Mat(),h2=new Mat();
         try{
+            // Preserve horizontal parallax: fit only the right image's vertical
+            // coordinate. A full image homography would flatten scene depth.
+            if(trainL.size()>=6&&coverage(trainL)&&coverage(trainR)){
+                List<Point> target=new ArrayList<>();
+                for(int i=0;i<trainL.size();i++)target.add(new Point(trainR.get(i).x,trainL.get(i).y));
+                a.fromList(trainR);b.fromList(target);
+                Mat affine=Calib3d.estimateAffine2D(a,b,mask,Calib3d.RANSAC,validationTolerance,2000,.99,10);
+                try{
+                    if(!affine.empty()){
+                        double ax=affine.get(1,0)[0],ay=affine.get(1,1)[0],dy=affine.get(1,2)[0];
+                        if(Math.abs(ax)<.12&&Math.abs(ay-1)<.15&&Math.abs(dy)<height*.15){
+                            h1.release();h2.release();h1=Mat.eye(3,3,CvType.CV_64F);h2=Mat.eye(3,3,CvType.CV_64F);
+                            h2.put(1,0,ax,ay,dy);
+                            List<Point> goodL=new ArrayList<>(),goodR=new ArrayList<>();
+                            for(int i=0;i<trainL.size();i++)if(Math.abs(trainL.get(i).y-project(h2,trainR.get(i)).y)<=validationTolerance){
+                                goodL.add(trainL.get(i));goodR.add(trainR.get(i));}
+                            if(goodL.size()>=Math.max(6,Math.ceil(trainL.size()*.75))&&coverage(goodL)&&coverage(goodR)
+                                &&usable(h1)&&usable(h2)&&error(h1,h2,testL,testR)<=validationTolerance){
+                                inliers=goodL.size();verticalError=error(h1,h2,testL,testR);
+                                return accept(h1,h2,testL,testR,goodL,goodR,"实时垂直对齐（像素视差）");
+                            }
+                            h1.release();h2.release();h1=new Mat();h2=new Mat();
+                        }
+                    }
+                }finally{affine.release();}
+            }
             // A horizontal rig only needs a vertical offset, not an unconstrained F.
             // Fit on training points and verify on held-out points and later frames.
             if(left.size()<80&&coverage(trainL)&&coverage(trainR)){
