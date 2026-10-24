@@ -28,7 +28,7 @@ public final class SceneStereoRectifier implements AutoCloseable {
         if(width<160||height<120)throw new IllegalArgumentException("Per-eye size must be at least 160x120");
         if(features<500||features>20000||!Double.isFinite(validationTolerance)||validationTolerance<.25||validationTolerance>5)
             throw new IllegalArgumentException("Invalid feature count or validation tolerance");
-        this.width=width;this.height=height;this.validationTolerance=validationTolerance;orb=ORB.create(features);
+        this.width=width;this.height=height;this.validationTolerance=validationTolerance;orb=ORB.create(features);orb.setFastThreshold(10);
     }
     public boolean ready(){return trusted;}
     public int minimumDisparity(){return (int)Math.floor(minimumDisparity)-16;}
@@ -67,6 +67,7 @@ public final class SceneStereoRectifier implements AutoCloseable {
     /** Call periodically; candidate needs three independently acquired frames before use. */
     public boolean observe(Mat left,Mat right){
         validate(left);validate(right);
+        matches=0;inliers=0;verticalError=Double.NaN;
         Mat l=gray(left),r=gray(right),ld=new Mat(),rd=new Mat(),mask=new Mat();
         MatOfKeyPoint lk=new MatOfKeyPoint(),rk=new MatOfKeyPoint();
         List<MatOfDMatch> forward=new ArrayList<>(),reverse=new ArrayList<>();
@@ -86,20 +87,43 @@ public final class SceneStereoRectifier implements AutoCloseable {
     // Package-visible geometric entry point allows testing real perspective camera correspondences.
     boolean estimate(List<Point> left,List<Point> right){
         matches=left.size();inliers=0;verticalError=Double.NaN;
-        if(left.size()!=right.size()||left.size()<80)return reject("有效匹配不足，等待更多纹理");
+        if(left.size()!=right.size()||left.size()<8)return reject("有效匹配不足（需要至少 8 对），请让特征分散在画面中");
         List<Point> trainL=new ArrayList<>(),trainR=new ArrayList<>(),testL=new ArrayList<>(),testR=new ArrayList<>();
         for(int i=0;i<left.size();i++){boolean test=i%4==0;
             (test?testL:trainL).add(left.get(i));(test?testR:trainR).add(right.get(i));}
         MatOfPoint2f a=new MatOfPoint2f(),b=new MatOfPoint2f(),il=new MatOfPoint2f(),ir=new MatOfPoint2f();
         Mat mask=new Mat(),f=null,h1=new Mat(),h2=new Mat();
         try{
+            // A horizontal rig only needs a vertical offset, not an unconstrained F.
+            // Fit on training points and verify on held-out points and later frames.
+            if(left.size()<80&&coverage(trainL)&&coverage(trainR)){
+                double[] offsets=new double[trainL.size()];
+                for(int i=0;i<offsets.length;i++)offsets[i]=trainL.get(i).y-trainR.get(i).y;
+                Arrays.sort(offsets);double dy=offsets[offsets.length/2];
+                h1.release();h2.release();
+                h1=Mat.eye(3,3,CvType.CV_64F);h2=Mat.eye(3,3,CvType.CV_64F);h2.put(1,2,dy);
+                List<Point> consistentL=new ArrayList<>(),consistentR=new ArrayList<>();
+                for(int i=0;i<trainL.size();i++)
+                    if(Math.abs(trainL.get(i).y-trainR.get(i).y-dy)<=validationTolerance){
+                        consistentL.add(trainL.get(i));consistentR.add(trainR.get(i));
+                    }
+                int consistent=consistentL.size();
+                if(Math.abs(dy)<=height*.05&&consistent>=Math.max(6,Math.ceil(offsets.length*.8))
+                    &&coverage(consistentL)&&coverage(consistentR)
+                    &&error(h1,h2,testL,testR)<=validationTolerance){
+                    inliers=consistent;verticalError=error(h1,h2,testL,testR);
+                    return accept(h1,h2,testL,testR,consistentL,consistentR,"少点水平校正（近似、非米制）");
+                }
+                h1.release();h2.release();h1=new Mat();h2=new Mat();
+            }
+            if(trainL.size()<12)return reject("少量匹配不符合水平双目模型，等待更多分散特征");
             a.fromList(trainL);b.fromList(trainR);
             f=Calib3d.findFundamentalMat(a,b,Calib3d.FM_RANSAC,1.5,.999,mask);
             if(f.empty()||f.rows()!=3||f.cols()!=3)return reject("极线估计失败");
             List<Point> goodL=new ArrayList<>(),goodR=new ArrayList<>();
             for(int i=0;i<trainL.size();i++)if(mask.get(i,0)[0]!=0){goodL.add(trainL.get(i));goodR.add(trainR.get(i));}
             inliers=goodL.size();
-            if(inliers<50||inliers<trainL.size()*.55||!coverage(goodL)||!coverage(goodR))return reject("匹配分布不足或误匹配过多");
+            if(inliers<12||inliers<trainL.size()*.55||!coverage(goodL)||!coverage(goodR))return reject("匹配分布不足或误匹配过多");
             // A dominant plane does not constrain a unique stereo fundamental matrix.
             Mat planeMask=new Mat(),plane=null;
             try{il.fromList(goodL);ir.fromList(goodR);plane=Calib3d.findHomography(il,ir,Calib3d.RANSAC,2,planeMask);
@@ -109,8 +133,14 @@ public final class SceneStereoRectifier implements AutoCloseable {
             if(!usable(h1)||!usable(h2))return reject("校正形变过大，等待更好的场景");
             double error=error(h1,h2,testL,testR);
             if(!Double.isFinite(error)||error>validationTolerance)return reject("独立验证误差过大，可能存在畸变或不同步");
-            verticalError=error;failures=0;
-            if(trusted&&error(leftH,rightH,testL,testR)<=validationTolerance){status="自然场景校正已验证（非米制）";return false;}
+            verticalError=error;
+            return accept(h1,h2,testL,testR,goodL,goodR,"自然场景校正（非米制）");
+        }finally{for(Mat m:new Mat[]{a,b,il,ir,mask,h1,h2})m.release();if(f!=null)f.release();}
+    }
+    private boolean accept(Mat h1,Mat h2,List<Point> testL,List<Point> testR,
+                           List<Point> goodL,List<Point> goodR,String mode){
+            failures=0;
+            if(trusted&&error(leftH,rightH,testL,testR)<=validationTolerance){status=mode+"已验证";return false;}
             if(pendingLeft.empty()||error(pendingLeft,pendingRight,testL,testR)>validationTolerance){
                 h1.copyTo(pendingLeft);h2.copyTo(pendingRight);confirmations=1;
                 status="候选校正：等待后续画面验证 1/3";return false;
@@ -121,8 +151,7 @@ public final class SceneStereoRectifier implements AutoCloseable {
             double[] d=new double[goodL.size()];
             for(int i=0;i<d.length;i++)d[i]=project(leftH,goodL.get(i)).x-project(rightH,goodR.get(i)).x;
             Arrays.sort(d);minimumDisparity=d[d.length/20];
-            pendingLeft.release();pendingRight.release();status="自然场景校正已启用（非米制）";return true;
-        }finally{for(Mat m:new Mat[]{a,b,il,ir,mask,h1,h2})m.release();if(f!=null)f.release();}
+            pendingLeft.release();pendingRight.release();status=mode+"已启用";return true;
     }
     private boolean reject(String reason){
         confirmations=0;pendingLeft.release();pendingRight.release();
@@ -131,7 +160,9 @@ public final class SceneStereoRectifier implements AutoCloseable {
     }
     private boolean coverage(List<Point> points){boolean[] cells=new boolean[12];
         for(Point p:points)if(p.x>=0&&p.y>=0&&p.x<width&&p.y<height)cells[Math.min(2,(int)(p.y*3/height))*4+Math.min(3,(int)(p.x*4/width))]=true;
-        int n=0;for(boolean c:cells)if(c)n++;return n>=8;}
+        int n=0;for(boolean c:cells)if(c)n++;double minX=width,maxX=0,minY=height,maxY=0;
+        for(Point p:points){minX=Math.min(minX,p.x);maxX=Math.max(maxX,p.x);minY=Math.min(minY,p.y);maxY=Math.max(maxY,p.y);}
+        return n>=4&&maxX-minX>=width*.25&&maxY-minY>=height*.25;}
     static Point project(Mat h,Point p){double w=h.get(2,0)[0]*p.x+h.get(2,1)[0]*p.y+h.get(2,2)[0];
         return new Point((h.get(0,0)[0]*p.x+h.get(0,1)[0]*p.y+h.get(0,2)[0])/w,
             (h.get(1,0)[0]*p.x+h.get(1,1)[0]*p.y+h.get(1,2)[0])/w);}
@@ -152,8 +183,8 @@ public final class SceneStereoRectifier implements AutoCloseable {
         for(int i=0;i<l.size();i++){Point a=project(h1,l.get(i)),b=project(h2,r.get(i));
             if(Double.isFinite(a.x)&&Double.isFinite(b.x)&&Double.isFinite(a.y)&&Double.isFinite(b.y)
                 &&a.x>=0&&a.x<width&&b.x>=0&&b.x<width&&a.y>=0&&a.y<height&&b.y>=0&&b.y<height)e[n++]=Math.abs(a.y-b.y);}
-        if(n<15||n<l.size()*.6)return Double.POSITIVE_INFINITY;
-        Arrays.sort(e,0,n);return e[(int)(.80*(n-1))];
+        if(n<2||n<l.size()*.8)return Double.POSITIVE_INFINITY;
+        Arrays.sort(e,0,n);return e[(int)Math.ceil(.80*(n-1))];
     }
     public void rectify(Mat left,Mat right,Mat l,Mat r){
         validate(left);validate(right);if(!ready())throw new IllegalStateException("No validated natural-scene rectification");

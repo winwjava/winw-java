@@ -74,6 +74,52 @@ public class SceneStereoRectifierTest {
             for(int i=0;i<3;i++){List<Point>[] p=correspondences(173+i,false);cached.estimate(p[0],p[1]);assertEquals(i==2,cached.ready());}
         }finally{Files.deleteIfExists(file);}
     }
+    @Test public void sparseHorizontalRigAcceptsTwentyPointsWithOutliers(){
+        try(SceneStereoRectifier rectifier=new SceneStereoRectifier(640,480)){
+            for(int frame=0;frame<3;frame++){
+                List<Point> l=new ArrayList<>(),r=new ArrayList<>();
+                Random random=new Random(42+frame);
+                for(int i=0;i<20;i++){
+                    double x=50+(i%5)*115+random.nextDouble(),y=50+(i/5)*115;
+                    l.add(new Point(x,y));r.add(new Point(x-10-i%3,y+3));
+                }
+                r.get(3).y+=40;r.get(7).y-=30;
+                assertEquals(rectifier.status,frame==2,rectifier.estimate(l,r));
+            }
+            assertTrue(rectifier.status,rectifier.ready());
+            assertTrue(rectifier.verticalError<.01);
+        }
+    }
+    @Test public void eightDistributedPointsWorkButHeldOutMismatchDoesNot(){
+        for(boolean corrupt:new boolean[]{false,true}){
+            try(SceneStereoRectifier rectifier=new SceneStereoRectifier(640,480)){
+                for(int frame=0;frame<3;frame++){
+                    List<Point> l=new ArrayList<>(),r=new ArrayList<>();
+                    for(int i=0;i<8;i++){
+                        double x=60+(i%4)*150,y=80+(i/4)*300;
+                        l.add(new Point(x,y));r.add(new Point(x-12,y+2));
+                    }
+                    if(corrupt)r.get(0).y+=25;
+                    rectifier.estimate(l,r);
+                }
+                assertEquals(rectifier.status,!corrupt,rectifier.ready());
+            }
+        }
+    }
+    @Test public void sparseUnrelatedPointsDoNotEnableDisparity(){
+        try(SceneStereoRectifier rectifier=new SceneStereoRectifier(640,480)){
+            for(int frame=0;frame<3;frame++){
+                List<Point> l=new ArrayList<>(),r=new ArrayList<>();
+                Random random=new Random(200+frame);
+                for(int i=0;i<20;i++){
+                    l.add(new Point(30+random.nextDouble()*580,30+random.nextDouble()*420));
+                    r.add(new Point(30+random.nextDouble()*580,30+random.nextDouble()*420));
+                }
+                assertFalse(rectifier.estimate(l,r));
+            }
+            assertFalse(rectifier.ready());
+        }
+    }
     @Test public void disparityMasksCheckCorrespondingRightPixelAndInvalidValue(){
         Mat disparity=new Mat(12,30,CvType.CV_16SC1,new Scalar(4*16));
         Mat l=new Mat(12,30,CvType.CV_8UC1,new Scalar(255)),r=l.clone(),out=new Mat();
