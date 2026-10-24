@@ -11,6 +11,37 @@ import org.opencv.imgcodecs.Imgcodecs;
 
 public class NaturalSceneCalibrationTest {
     @BeforeClass public static void load(){OpenCvNative.load();}
+    @Test public void stereoFilteringRecoversMajorityGeometryBeforePooling(){
+        try(NaturalSceneCalibration estimator=new NaturalSceneCalibration(640,480,3500,1.5)){
+            NaturalSceneCalibration.Matches raw=new NaturalSceneCalibration.Matches();
+            Random random=new Random(4981);
+            for(int i=0;i<400;i++){
+                double u=40+random.nextDouble()*560,v=40+random.nextDouble()*400,z=1+random.nextDouble()*6;
+                double x=(u-320)*z/500,y=(v-240)*z/500;
+                double xx=Math.cos(.02)*x+Math.sin(.02)*z-.065,zz=-Math.sin(.02)*x+Math.cos(.02)*z;
+                raw.a.add(new Point(u,v));
+                raw.b.add(i<216?new Point(500*xx/zz+320+random.nextGaussian()*.05,
+                    500*y/zz+240+random.nextGaussian()*.05):new Point(random.nextDouble()*640,random.nextDouble()*480));
+            }
+            NaturalSceneCalibration.Matches filtered=estimator.stereoInliers(raw);
+            assertTrue("Recover the valid 54% majority",filtered.a.size()>=200);
+            int correct=0;for(Point point:filtered.a)if(raw.a.indexOf(point)<216)correct++;
+            assertTrue("Pooling should receive predominantly true matches",correct>=filtered.a.size()*.95);
+            assertEquals(400,raw.a.size()); // Keep raw matches for independent validation.
+        }
+    }
+    @Test public void stereoFilteringRejectsRandomAndInsufficientCorrespondences(){
+        try(NaturalSceneCalibration estimator=new NaturalSceneCalibration(640,480,3500,1.5)){
+            NaturalSceneCalibration.Matches raw=new NaturalSceneCalibration.Matches();
+            assertTrue(estimator.stereoInliers(raw).a.isEmpty());
+            Random random=new Random(721);
+            for(int i=0;i<400;i++){
+                raw.a.add(new Point(random.nextDouble()*640,random.nextDouble()*480));
+                raw.b.add(new Point(random.nextDouble()*640,random.nextDouble()*480));
+            }
+            assertTrue(estimator.stereoInliers(raw).a.isEmpty());
+        }
+    }
     @Test public void weakContrastStereoRecoversRealCorrespondences()throws Exception{
         Mat a=new Mat(480,640,CvType.CV_8UC1),b=new Mat(),transform=Mat.eye(2,3,CvType.CV_64F);
         org.opencv.features2d.ORB baseline=org.opencv.features2d.ORB.create(3500);

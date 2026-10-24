@@ -210,6 +210,23 @@ public final class NaturalSceneCalibration implements AutoCloseable {
             return refined;
         }finally{a.release();b.release();mask.release();hm.release();if(h!=null)h.release();if(f!=null)f.release();}
     }
+    /** Clean each stereo observation before pooling; local models are only filters.
+     * The pooled model must still pass the stricter geometry and held-out gates. */
+    Matches stereoInliers(Matches points){
+        Matches good=new Matches();good.method=points.method+"+RANSAC";
+        if(points.a.size()!=points.b.size()||points.a.size()<16)return good;
+        MatOfPoint2f a=new MatOfPoint2f(),b=new MatOfPoint2f();Mat mask=new Mat(),f=null;
+        try{
+            a.fromList(points.a);b.fromList(points.b);
+            f=Calib3d.findFundamentalMat(a,b,Calib3d.FM_RANSAC,1.0,.999,mask);
+            if(f.rows()!=3||f.cols()!=3||!Core.checkRange(f)||mask.total()!=points.a.size())return good;
+            if(Core.countNonZero(mask)<Math.max(12,points.a.size()*.5))return good;
+            for(int i=0;i<points.a.size();i++)if(mask.get(i,0)[0]!=0){
+                good.a.add(points.a.get(i));good.b.add(points.b.get(i));
+            }
+            return good;
+        }finally{a.release();b.release();mask.release();if(f!=null)f.release();}
+    }
     static RealMatrix intrinsic(double focal,int width,int height){return MatrixUtils.createRealMatrix(new double[][]{{focal,0,width/2.},{0,focal,height/2.},{0,0,1}});}
     private static RealMatrix matrix(Mat m){double[][] v=new double[m.rows()][m.cols()];for(int i=0;i<m.rows();i++)for(int j=0;j<m.cols();j++)v[i][j]=m.get(i,j)[0];return MatrixUtils.createRealMatrix(v);}
     private static Mat mat(RealMatrix matrix){Mat m=new Mat(matrix.getRowDimension(),matrix.getColumnDimension(),CvType.CV_64F);for(int i=0;i<m.rows();i++)m.put(i,0,matrix.getRow(i));return m;}
@@ -266,7 +283,14 @@ public final class NaturalSceneCalibration implements AutoCloseable {
             +" eligibleHeldout="+sufficientHeldout+"/"+((count+4)/5)+"; eligibility uses descriptors only, final geometry still unverified");
         List<RealMatrix> fl=new ArrayList<>(),fr=new ArrayList<>();Matches pooled=new Matches();int training=0;
         progress.accept("Java/OpenCV 跨时刻匹配与退化检查…");
-        for(int i=0;i<count;i++)if(i%5!=0){pooled.add(stereo.get(i),250);training++;}
+        for(int i=0;i<count;i++)if(i%5!=0){
+            check(cancelled);Matches raw=stereo.get(i),clean=stereoInliers(raw);
+            CalibrationRuntime.log(log,"STEREO_FILTER frame="+selected.get(i)+" raw="+raw.a.size()
+                +" retained="+clean.a.size()+" result="+(clean.a.isEmpty()?"rejected":"accepted"));
+            if(!clean.a.isEmpty()){pooled.add(clean,250);training++;}
+        }
+        CalibrationRuntime.log(log,"STEREO_POOL acceptedFrames="+training+" trainingFrames="+(count-(count+4)/5)
+            +" filteredMatches="+pooled.a.size()+"; heldout frames excluded");
         Map<String,Integer> leftCounts=new TreeMap<>(),rightCounts=new TreeMap<>();
         List<int[]> candidates=temporalPairs(count);int completed=0;
         for(int[] pair:candidates){check(cancelled);int i=pair[0],j=pair[1];
@@ -281,11 +305,12 @@ public final class NaturalSceneCalibration implements AutoCloseable {
         }
         CalibrationRuntime.log(log,"TEMPORAL_SUMMARY candidatesPerEye="+candidates.size()+" acceptedLeft="+fl.size()+" acceptedRight="+fr.size()+" left="+leftCounts+" right="+rightCounts);
         if(fl.size()<6||fr.size()<6)throw new IOException("时序几何约束不足：左 "+fl.size()+" / 右 "+fr.size()+"（各需至少 6）；具体筛选原因已输出到控制台和 self-calibration.log");
+        if(training<3)throw new IOException("逐帧筛选后双目有效画面不足："+training+"（至少 3 帧），请查看 STEREO_FILTER 日志");
         check(cancelled);progress.accept("Java/OpenCV 多帧焦距估计与双目位姿恢复…");
 
         long stereoStarted=System.nanoTime();Mat f=fundamental(pooled);
         try{logGeometry(log,"stereo-pooled","ORB-or-SIFT",pooled,stereoStarted,new TreeMap<>());}catch(IOException error){f.release();throw error;}
-        if(f.empty()){f.release();throw new IOException("双目几何估计被拒绝："+geometryReason);}
+        if(f.empty()){f.release();throw new IOException("双目几何估计被拒绝："+geometryReason+"，内点 "+geometryInliers+"/"+pooled.a.size()+"；查看 STEREO_FILTER 和 stereo-pooled 日志");}
         double[] focal;
         try{CalibrationRuntime.log(log,"STEREO_CONSTRAINT F="+text(f));focal=JointFocalEstimator.estimate(fl,fr,matrix(f),width,height,log);}
         catch(IOException|RuntimeException error){f.release();throw error;}
