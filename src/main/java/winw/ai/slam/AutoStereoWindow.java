@@ -12,7 +12,7 @@ import javax.swing.*;
 
 /** Settings stay on the EDT; camera sessions and calibration jobs run sequentially on one worker. */
 final class AutoStereoWindow {
-    private final JFrame window=new JFrame("实时双目自动匹配 · 相机与调试设置");
+    private final JFrame window=new JFrame("实时三维环境感知 · 双目相机");
     private final ExecutorService worker=Executors.newSingleThreadExecutor(r->new Thread(r,"auto-stereo-session"));
     private final AtomicReference<AutoStereoDemo.Frame> latest=new AtomicReference<>();
     private final AtomicLong generation=new AtomicLong();
@@ -23,10 +23,11 @@ final class AutoStereoWindow {
     private String notice;
     private boolean calibrating;
     private final Controls controls;
-    private final JLabel status=new JLabel("相机启动后自动匹配并显示视差，无需录制或离线标定");
+    private final JLabel status=new JLabel("相机启动后自动生成三维环境，无需录制或离线标定");
     private final JLabel location=new JLabel(" ");
     private final JButton apply=new JButton("应用并重启相机"),stop=new JButton("停止并保存"),calibrate=new JButton("高级：离线米制自标定");
     private final Preview left=new Preview("左图"),right=new Preview("右图"),disparity=new Preview("视差 / 像素（不表示米）");
+    private final Scene3DPanel scene=new Scene3DPanel();
     private final javax.swing.Timer timer;
 
     AutoStereoWindow(AutoStereoSettings settings){
@@ -43,7 +44,14 @@ final class AutoStereoWindow {
         folder.addActionListener(e->{try{if(currentOutput!=null)Desktop.getDesktop().open(currentOutput.toFile());}
             catch(Exception error){showError(error);}});
         JPanel footer=new JPanel(new GridLayout(2,1,0,5));footer.setBorder(BorderFactory.createEmptyBorder(8,12,8,12));
-        footer.add(status);footer.add(location);window.add(header,BorderLayout.NORTH);window.add(pictures);window.add(footer,BorderLayout.SOUTH);
+        footer.add(status);footer.add(location);window.add(header,BorderLayout.NORTH);
+        JTabbedPane tabs=new JTabbedPane();
+        JPanel environment=new JPanel(new BorderLayout());environment.add(scene);
+        JButton fit=new JButton("适应三维场景");fit.addActionListener(e->scene.resetView());JPanel sceneTools=new JPanel();sceneTools.add(fit);
+        JCheckBox color=new JCheckBox("原图着色",true),trusted=new JCheckBox("仅高置信表面");
+        color.addActionListener(e->scene.setTextured(color.isSelected()));trusted.addActionListener(e->scene.setTrustedOnly(trusted.isSelected()));sceneTools.add(color);sceneTools.add(trusted);environment.add(sceneTools,BorderLayout.SOUTH);
+        tabs.addTab("三维环境（实时）",environment);tabs.addTab("相机 / 视差调试",pictures);
+        window.add(tabs);window.add(footer,BorderLayout.SOUTH);
         window.setSize(1450,790);window.setMinimumSize(new Dimension(1180,720));window.setLocationByPlatform(true);
         window.setDefaultCloseOperation(WindowConstants.DO_NOTHING_ON_CLOSE);
         window.addWindowListener(new WindowAdapter(){@Override public void windowClosing(WindowEvent e){close();}});
@@ -76,11 +84,13 @@ final class AutoStereoWindow {
     }
     private void refresh(){
         AutoStereoDemo.Frame frame=latest.get();if(frame!=null){left.image=frame.left;right.image=frame.right;disparity.image=frame.disparity;
-            left.repaint();right.repaint();disparity.repaint();}
+            left.repaint();right.repaint();disparity.repaint();
+            if(frame.surface!=null)scene.updateSurface(frame.surface,"逐像素重建 · 含低置信区域推断 · 基线 "+(active==null?"?":active.baselineMm)+" mm");
+            else scene.update(frame.occupancy,frame.occupancy==null?"图像对齐未就绪，尚无三维观测":frame.occupancy.occupiedCount+" 个占据单元 · 相机局部坐标 · 基线 "+(active==null?"?":active.baselineMm)+" mm");}
         status.setText(notice!=null?notice:frame==null?"正在等待双目图像…":frame.status);
         location.setText(currentOutput==null?"每次应用参数会新建独立录制目录；单眼尺寸与相机实际模式必须匹配":"本次输出："+currentOutput);
     }
-    private void clearPreviews(){left.image=null;right.image=null;disparity.image=null;left.repaint();right.repaint();disparity.repaint();}
+    private void clearPreviews(){scene.update(null,"等待新的相机会话");left.image=null;right.image=null;disparity.image=null;left.repaint();right.repaint();disparity.repaint();}
     private void showError(Exception error){JOptionPane.showMessageDialog(window,error.getMessage(),"参数或运行错误",JOptionPane.ERROR_MESSAGE);}
     private void close(){
         closed=true;generation.incrementAndGet();sessionStop.set(true);

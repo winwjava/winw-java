@@ -13,6 +13,7 @@ import org.opencv.imgcodecs.Imgcodecs;
 public final class StereoSlamDemo {
     private StereoSlamDemo(){}
     public static void main(String[] args)throws Exception{
+        if(args.length>0&&args[0].equals("evaluate")){RecordingSlamEvaluation.main(Arrays.copyOfRange(args,1,args.length));return;}
         if(args.length>0&&args[0].equals("camera-auto")){AutoStereoDemo.main(args);return;}
         if(args.length==0){
             // IDE 直接运行这里。常用默认参数集中在 main，启动后也可在界面调整。
@@ -28,7 +29,7 @@ public final class StereoSlamDemo {
             defaults.features=3500;defaults.validationTolerance=1.5;
             defaults.observationMillis=500;
             defaults.record=true;defaults.recordMillis=500;defaults.maxSamples=120;
-            defaults.baselineMm=0;                     // 米制标定前在界面填写实测基线，0 表示未填写
+            defaults.baselineMm=65;                     // 本设备实测基线 65 mm；其他设备在界面修改
             defaults.outputDirectory=Paths.get("target/slam-output");
             defaults.rectificationCache=null;         // 可选：已有自然场景校正缓存
             AutoStereoDemo.launch(defaults);return;

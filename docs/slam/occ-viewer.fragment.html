@@ -1,0 +1,92 @@
+<div id="occ-volume-view">
+  <h3>实际图片生成的三维 OCC</h3>
+  <div class="viz-controls">
+    <label class="form-label">视图 <select id="occ-mode" class="form-select"><option value="local">逐帧局部占据</option><option value="global">历史融合占据（第 23 帧）</option></select></label>
+    <button id="occ-play" class="btn" type="button">播放</button>
+    <button id="occ-fit" class="btn" type="button">适应视图</button>
+    <label class="form-check"><input id="occ-color" class="form-check-input" type="checkbox" checked><span class="form-check-label">原图着色</span></label>
+  </div>
+  <label class="form-label" for="occ-frame">帧 <span id="occ-frame-label" class="tabular-nums"></span></label>
+  <input id="occ-frame" class="form-range" type="range" min="0" max="119" value="12">
+  <div id="occ-status" aria-live="polite"></div>
+  <div class="occ-scene">
+    <canvas id="occ-canvas" role="img" aria-label="三维占据体素。拖动旋转，滚轮缩放。"></canvas>
+    <figure><img id="occ-image" alt="当前帧左眼原始图片"><figcaption>对应原图 · 拖动三维视图旋转，滚轮缩放</figcaption></figure>
+  </div>
+  <div class="text-small">方块＝观测到的占据；无方块区域可能为空闲或未知。局部单帧估计，5 cm 名义体素；非语义神经网络 OCC，几何精度未验证。</div>
+</div>
+<style>
+#occ-volume-view .occ-scene{display:grid;grid-template-columns:minmax(0,3fr) minmax(0,1fr);gap:12px;align-items:start}
+#occ-volume-view canvas{display:block;width:100%;height:490px;touch-action:none;background:var(--muted)}
+#occ-volume-view figure{margin:0;min-width:0}
+#occ-volume-view img{display:block;width:100%;height:auto}
+#occ-volume-view figcaption{color:var(--muted-foreground)}
+#occ-volume-view #occ-status{margin:10px 0}
+@media(max-width:600px){#occ-volume-view .occ-scene{grid-template-columns:1fr}#occ-volume-view canvas{height:400px}#occ-volume-view figure{max-width:240px}}
+</style>
+<script type="application/json" id="occ-data">__OCC_DATA__</script>
+<script>
+(()=>{
+ const root=document.getElementById('occ-volume-view'), data=JSON.parse(document.getElementById('occ-data').textContent);
+ const canvas=root.querySelector('#occ-canvas'),ctx=canvas.getContext('2d'),slider=root.querySelector('#occ-frame'),mode=root.querySelector('#occ-mode');
+ const status=root.querySelector('#occ-status'),image=root.querySelector('#occ-image'),label=root.querySelector('#occ-frame-label'),colors=root.querySelector('#occ-color');
+ let index=Math.max(0,data.frames.findIndex(f=>f.index===12)),yaw=-.55,pitch=.3,zoom=1,centre=[0,0,0],radius=1,cells=[],timer=null,drag=null;
+ slider.max=data.frames.length-1;slider.value=index;
+ const faces=[[0,2,3,1],[4,5,7,6],[0,1,5,4],[2,6,7,3],[0,4,6,2],[1,3,7,5]];
+ function tone(){const s=getComputedStyle(root);function resolve(name){const probe=document.createElement('span');probe.style.color='var('+name+')';root.appendChild(probe);const color=getComputedStyle(probe).color;probe.remove();return color;}return {fg:s.color,line:resolve('--border'),series:resolve('--viz-series-1')};}
+ function remember(){const api=window.openai;if(api&&api.setWidgetState)api.setWidgetState({modelContent:{frame:data.frames[index].index,view:mode.value},privateContent:{yaw,pitch,zoom}}).catch(()=>{});}
+ function setFrame(fit=false){
+  slider.disabled=mode.value==='global';
+  const f=data.frames[index];label.textContent=f.index+' / 119';image.src='data:image/jpeg;base64,'+f.thumbnail;
+  cells=mode.value==='global'?data.globalVoxels:f.voxels;
+  status.textContent=(mode.value==='global'?'历史融合快照 · 不代表最终地图':'相机局部坐标 · 第 '+f.index+' 帧')+' · 占据 '+cells.length+' 个显示体素 · '+(f.tracking==='LOST'||f.tracking==='INITIALIZING'?'无可靠全局位姿':f.tracking)+' · 已观测空闲 '+(mode.value==='global'?data.globalFree:f.free)+' 格';
+  if(fit)fitView();draw();
+ }
+ function fitView(){
+  if(!cells.length){centre=[0,0,0];radius=1;return;}
+  const lo=[Infinity,Infinity,Infinity],hi=[-Infinity,-Infinity,-Infinity];
+  for(const v of cells)for(let k=0;k<3;k++){lo[k]=Math.min(lo[k],v[k]);hi[k]=Math.max(hi[k],v[k]+1);}
+  centre=lo.map((x,k)=>(x+hi[k])/2);radius=Math.max(3,Math.hypot(...hi.map((x,k)=>(x-lo[k])/2)));zoom=1.25;
+ }
+ function project(p,w,h){let x=p[0]-centre[0],y=-(p[1]-centre[1]),z=p[2]-centre[2];
+  const u=x*Math.cos(yaw)+z*Math.sin(yaw),a=-x*Math.sin(yaw)+z*Math.cos(yaw);
+  const v=y*Math.cos(pitch)-a*Math.sin(pitch),depth=y*Math.sin(pitch)+a*Math.cos(pitch);
+  const perspective=Math.min(w,h)*1.5*zoom/(radius*3-depth);
+  return [w/2+u*perspective,h/2-v*perspective,depth];
+ }
+ function draw(){
+  const w=canvas.clientWidth,h=canvas.clientHeight,dpr=Math.min(devicePixelRatio||1,2);canvas.width=w*dpr;canvas.height=h*dpr;ctx.setTransform(dpr,0,0,dpr,0,0);ctx.clearRect(0,0,w,h);
+  const theme=tone(),polygons=[];
+  for(const cell of cells){const vertices=[];for(let i=0;i<8;i++)vertices.push(project([cell[0]+(i&1),cell[1]+((i>>1)&1),cell[2]+((i>>2)&1)],w,h));
+   for(let fi=0;fi<faces.length;fi++){const p=faces[fi].map(j=>vertices[j]);
+    const cross=(p[1][0]-p[0][0])*(p[2][1]-p[0][1])-(p[1][1]-p[0][1])*(p[2][0]-p[0][0]);
+    if(cross<=0)continue;polygons.push({p,depth:p.reduce((s,q)=>s+q[2],0)/4,color:cell[3],shade:[.65,.9,.8,1,.72,.86][fi]});
+   }
+  }
+  polygons.sort((a,b)=>a.depth-b.depth);
+  for(const f of polygons){ctx.beginPath();f.p.forEach((p,i)=>i?ctx.lineTo(p[0],p[1]):ctx.moveTo(p[0],p[1]));ctx.closePath();
+   if(colors.checked&&mode.value==='local'){let c=f.color;ctx.fillStyle=`rgb(${Math.round(((c>>16)&255)*f.shade)},${Math.round(((c>>8)&255)*f.shade)},${Math.round((c&255)*f.shade)})`;}
+   else ctx.fillStyle=theme.series;
+   ctx.fill();ctx.strokeStyle=theme.line;ctx.lineWidth=.35;ctx.stroke();
+  }
+  ctx.fillStyle=theme.fg;ctx.font='12px sans-serif';ctx.fillText('三维体素 · 拖动旋转 / 滚轮缩放',12,h-18);
+  const axes=[['X → 右',[1,0,0]],['Y ↓ 下',[0,1,0]],['Z → 前',[0,0,1]]],base=[centre[0]-radius*.7,centre[1]+radius*.65,centre[2]];
+  const origin=project(base,w,h);for(const [text,vec]of axes){const p=project(base.map((v,k)=>v+vec[k]*radius*.3),w,h);ctx.strokeStyle=theme.fg;ctx.lineWidth=1;ctx.beginPath();ctx.moveTo(origin[0],origin[1]);ctx.lineTo(p[0],p[1]);ctx.stroke();ctx.fillText(text,p[0],p[1]);}
+ }
+ slider.addEventListener('input',()=>{index=+slider.value;setFrame(true);remember()});
+ mode.addEventListener('change',()=>{if(mode.value==='global'){index=data.frames.findIndex(f=>f.index===data.globalFrame);if(index<0)index=0;slider.value=index;}setFrame(true)});
+ root.querySelector('#occ-fit').onclick=()=>{fitView();draw()};colors.onchange=draw;
+ root.querySelector('#occ-play').onclick=()=>{if(timer){clearInterval(timer);timer=null;root.querySelector('#occ-play').textContent='播放';}else{mode.value='local';timer=setInterval(()=>{index=(index+1)%data.frames.length;slider.value=index;setFrame(false)},600);root.querySelector('#occ-play').textContent='暂停';}};
+ canvas.addEventListener('pointerdown',e=>{drag=[e.clientX,e.clientY];canvas.setPointerCapture(e.pointerId)});
+ canvas.addEventListener('pointermove',e=>{if(!drag)return;yaw+=(e.clientX-drag[0])*.008;pitch=Math.max(-1.4,Math.min(1.4,pitch+(e.clientY-drag[1])*.008));drag=[e.clientX,e.clientY];draw()});
+ canvas.addEventListener('pointerup',()=>{drag=null;remember()});canvas.addEventListener('pointercancel',()=>drag=null);
+ canvas.addEventListener('wheel',e=>{e.preventDefault();zoom=Math.max(.3,Math.min(8,zoom*Math.exp(-e.deltaY*.001)));draw()},{passive:false});
+ canvas.addEventListener('keydown',e=>{if(!['ArrowLeft','ArrowRight','ArrowUp','ArrowDown','+','-','='].includes(e.key))return;e.preventDefault();if(e.key==='ArrowLeft')yaw-=.12;if(e.key==='ArrowRight')yaw+=.12;if(e.key==='ArrowUp')pitch-=.12;if(e.key==='ArrowDown')pitch+=.12;if(e.key==='+'||e.key==='=')zoom*=1.1;if(e.key==='-')zoom/=1.1;draw()});
+ function restore(state){if(!state)return;const model=state.modelContent||state,ui=state.privateContent||{};
+  if(model.frame!==undefined){const found=data.frames.findIndex(f=>f.index===model.frame);if(found>=0){index=found;slider.value=index;}}
+  if(model.view==='global'||model.view==='local')mode.value=model.view;setFrame(true);
+  if(Number.isFinite(ui.yaw))yaw=ui.yaw;if(Number.isFinite(ui.pitch))pitch=ui.pitch;if(Number.isFinite(ui.zoom))zoom=ui.zoom;draw();}
+ window.addEventListener('openai:set_globals',e=>restore(e.detail?.globals?.widgetState));
+ new ResizeObserver(draw).observe(canvas);new MutationObserver(draw).observe(document.documentElement,{attributes:true,attributeFilter:['class','style','data-theme']});setFrame(true);restore(window.openai?.widgetState);
+})();
+</script>

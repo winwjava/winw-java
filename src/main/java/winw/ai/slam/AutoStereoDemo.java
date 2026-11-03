@@ -14,14 +14,14 @@ import org.opencv.imgcodecs.Imgcodecs;
 public final class AutoStereoDemo {
     private AutoStereoDemo(){}
     static final class Frame {
-        final BufferedImage left,right,disparity;final String status;
-        Frame(Mat l,Mat r,Mat d,String status){left=LiveStereoSlam.bufferedImage(l);right=LiveStereoSlam.bufferedImage(r);
-            disparity=d.empty()?null:LiveStereoSlam.bufferedImage(d);this.status=status;}
+        final BufferedImage left,right,disparity;final String status;final OccupancySnapshot occupancy;final OccupancySurfaceMesh surface;
+        Frame(Mat l,Mat r,Mat d,String status,OccupancySnapshot occupancy,OccupancySurfaceMesh surface){left=LiveStereoSlam.bufferedImage(l);right=LiveStereoSlam.bufferedImage(r);
+            disparity=d.empty()?null:LiveStereoSlam.bufferedImage(d);this.status=status;this.occupancy=occupancy;this.surface=surface;}
     }
     public static void main(String[] args)throws Exception{
         if(args.length<5)throw new IllegalArgumentException("camera-auto <eye-width> <eye-height> <device> <output-directory> [live.properties]");
         LiveSlamConfig config=LiveSlamConfig.load(args.length>5?Paths.get(args[5]):null);
-        AutoStereoSettings s=new AutoStereoSettings();s.width=Integer.parseInt(args[1]);s.height=Integer.parseInt(args[2]);s.device=Integer.parseInt(args[3]);
+        AutoStereoSettings s=new AutoStereoSettings();s.baselineMm=Double.parseDouble(System.getProperty("slam.baselineMm","65"));s.width=Integer.parseInt(args[1]);s.height=Integer.parseInt(args[2]);s.device=Integer.parseInt(args[3]);
         s.outputDirectory=Paths.get(args[4]);s.backend=config.backend;s.fourcc=config.fourcc;s.fps=config.fps;
         s.layout=config.layout;s.swapEyes=config.swapEyes;s.disparities=config.disparities;
         String cache=System.getProperty("slam.auto.rectificationCache");if(cache!=null)s.rectificationCache=Paths.get(cache);
@@ -38,7 +38,8 @@ public final class AutoStereoDemo {
         int area=settings.blockSize*settings.blockSize;
         StereoSGBM sgbm=StereoSGBM.create(0,config.disparities,settings.blockSize,8*area,32*area,1,31,settings.uniquenessRatio,100,2,StereoSGBM.MODE_SGBM_3WAY);
         int samples=0;long started=System.nanoTime(),lastObservation=0,lastRecord=0,lastPublish=0;
-        try(SceneStereoRectifier rectifier=new SceneStereoRectifier(width,height,settings.features,settings.validationTolerance);
+        try(StereoSurfaceReconstructor surfaceReconstructor=new StereoSurfaceReconstructor(settings.disparities,4);
+            SceneStereoRectifier rectifier=new SceneStereoRectifier(width,height,settings.features,settings.validationTolerance);
             StereoCamera camera=new StereoCamera(settings.device,width,height,config);
             BufferedWriter manifest=Files.newBufferedWriter(output.resolve("manifest.txt"))){
             if(settings.rectificationCache!=null)rectifier.loadCandidate(settings.rectificationCache);
@@ -57,15 +58,25 @@ public final class AutoStereoDemo {
                 }
                 if(now-lastPublish<100_000_000L)continue;lastPublish=now;
                 visual.release();
+                OccupancySnapshot occupancy=null;OccupancySurfaceMesh surface=null;long sceneStarted=System.nanoTime();
                 if(rectifier.ready()){
                     rectifier.rectify(l,r,rl,rr);rectifier.masks(lm,rm);
                     sgbm.setMinDisparity(rectifier.minimumDisparity());
-                    Mat gl=SceneStereoRectifier.gray(rl),gr=SceneStereoRectifier.gray(rr);
-                    try{sgbm.compute(gl,gr,disparity);renderDisparity(disparity,lm,rm,sgbm.getMinDisparity(),config.disparities,visual);}
-                    finally{gl.release();gr.release();}
+                    if(settings.baselineMm>0){
+                        StereoSurfaceReconstructor.Result reconstruction=surfaceReconstructor.compute(rl,rr,lm,rm,sgbm.getMinDisparity(),settings.baselineMm/1000.);
+                        surface=reconstruction.surface;disparity.create(height,width,CvType.CV_16S);disparity.put(0,0,reconstruction.disparity);
+                        Mat trustedMask=lm.clone();byte[] evidence=new byte[width*height];trustedMask.get(0,0,evidence);
+                        for(int i=0;i<evidence.length;i++)if(reconstruction.confidence[i]<128)evidence[i]=0;
+                        trustedMask.put(0,0,evidence);
+                        try{occupancy=CameraLocalOccupancy.measure(disparity,trustedMask,rm,sgbm.getMinDisparity(),settings.baselineMm/1000.);}finally{trustedMask.release();}
+                    }else{
+                        Mat gl=SceneStereoRectifier.gray(rl),gr=SceneStereoRectifier.gray(rr);
+                        try{sgbm.compute(gl,gr,disparity);}finally{gl.release();gr.release();}
+                    }
+                    renderDisparity(disparity,lm,rm,sgbm.getMinDisparity(),config.disparities,visual);
                 }else{l.copyTo(rl);r.copyTo(rr);}
                 latest.set(new Frame(rl,rr,visual,String.format(Locale.ROOT,"%s | 匹配 %d / 内点 %d / 验证误差 %.2f px | 已录制 %d/%d 对%s",
-                    rectifier.status+" / "+rectifier.matchingMethod,rectifier.matches,rectifier.inliers,rectifier.verticalError,samples,settings.maxSamples,settings.record?"":"（录制关闭）")));
+                    rectifier.status+" / "+rectifier.matchingMethod,rectifier.matches,rectifier.inliers,rectifier.verticalError,samples,settings.maxSamples,settings.record?"":"（录制关闭）")+String.format(Locale.ROOT," | 三维处理 %.1f ms / 相机局部几何",(System.nanoTime()-sceneStarted)/1e6),occupancy,surface));
             }
         }finally{for(Mat m:new Mat[]{l,r,rl,rr,disparity,visual,lm,rm})m.release();}
     }

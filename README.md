@@ -8,10 +8,7 @@
 </table>
 
 
-# 
-
-#人脑的学习方式是强化学习，认知模型是图模型，计算方式是图运算
-
+## 大脑的强化学习和认知模型
 
 ## Java 双目 SLAM
 
@@ -25,7 +22,7 @@
 
 
 
-##强化学习
+## 强化学习
 
 大脑中的多巴胺对学习记忆以及运动控制至关重要。在多巴胺与学习记忆方面，剑桥大学的Schultz等人在1997年提出了多巴胺的“奖赏预测误差假说 (reward prediction error hypothesis)”，提出多巴胺在巴甫洛夫条件反射式学习期间编码刺激-奖赏预测误差，即实际奖赏与基于该刺激的预期奖赏之间的差异。该理论已被拓展并广泛应用于有关动作抉择的强化学习。
 
@@ -50,7 +47,7 @@ http://life.ecnu.edu.cn/da/73/c18135a383603/page.htm
 https://mp.weixin.qq.com/s/mPrHBOu_f7OpyhxZHKTrFA  
 Neftci, E. O., & Averbeck, B. B. (2019).Reinforcement learning in artificial and biological systems. Nature Machine Intelligence, 1(3),133-143. doi: 10.1038/s42256-019-0025-4
 
-##主观情绪
+## 主观情绪
 情绪系统属于原始脑，在节肢动物、爬行动物、哺乳动物的神经系统中处于核心地位。我们的一切认知最终都会形成主观情绪认知，情绪也主导了动机和运动。比如惊恐、愉悦等等。
 
 情绪在强化学习中扮演了“状态反馈”的角色。对环境的感知会立马反馈到情绪状态上。
@@ -68,7 +65,7 @@ Neftci, E. O., & Averbeck, B. B. (2019).Reinforcement learning in artificial and
 
 https://mp.weixin.qq.com/s/v6xXHbZ_NcuS2XaUF37Oyg
 
-##认知模型
+## 认知模型
 
 大脑通过感知器官可以识别：物体、文字、人脸、语音、方向、位置等等，这些识别的模型以及大脑记忆中的模型都是以“图”为基础的模型。最终通过在自然环境中的强化学习形成庞大的知识图谱。
 
@@ -99,7 +96,7 @@ https://mp.weixin.qq.com/s/to9ns244qvlyfarEQpD0xw
 https://github.com/LMescheder/Occupancy-Networks
 CVPR-2019 Occupancy Networks: Learning 3D Reconstruction in Function Space
 
-##时间印记
+## 时间印记
 科学家研究表明，人类大脑海马体中存在一种“时间细胞”，时间细胞的链式信号反映了事件的时间顺序。对于一般的强化学习来说，主观行动Action和行动结果Reward的关系在被学习之前必须存在某种联系，这种联系大部分是有时间先后顺序的关系，而时间细胞组成的时间联系是强化学习的最佳介导关系（空间位置或其他关系也可以）。
 
 <img width="500px" src="./docs/v2-cdd9a9e8ae1f9ad3fb992c2b288cca1b_720w.jpg">
@@ -109,7 +106,7 @@ CVPR-2019 Occupancy Networks: Learning 3D Reconstruction in Function Space
 参考
 https://medicalxpress.com/news/2017-06-brain-hippocampus-memories-events.html#jCp
 
-##时序记忆
+## 时序记忆
 
 神经细胞天然带有记忆功能，大脑皮层中的记忆调节维护方式有：长时程增强、长时程抑制，通俗的讲是用进废退。
 人脑对特定事物认知后会形成的固定记忆，或可称为概念，科学家已经证实大脑中存在概念细胞，神经科学还发现了对特定运动的记忆会形成时序记忆。
@@ -140,7 +137,7 @@ http://www.ion.ac.cn/xwen/kyjz/2015njyq/201202/t20120214_5315828.html
 http://www.ion.ac.cn/xwen/kyjz/2022n/202202/t20220210_6354155.html  
 http://www.ion.ac.cn/xwen/mtsm/2019n/202202/t20220215_6355476.html 群体神经元
 
-##工作记忆
+## 工作记忆
 Neuron：短时记忆形成的新环路机制
 
 工作记忆在大脑中广泛分布，任意一组概念的神经细胞都可以借助海马体（或者基底核的SNr？）瞬间组成工作记忆。
@@ -161,7 +158,7 @@ https://mp.weixin.qq.com/s/5dTgtxajZYOzpXcRZZAZNA
 http://www.ion.ac.cn/xwen/mtsm/2019n/202202/t20220215_6355476.html 群体神经元
 https://www.cas.cn/zt/sszt/75yq/cg/202410/t20241001_5034738.shtml
 
-##立体视觉
+## 立体视觉
 大脑的视觉皮层根据视觉感受器传回的光信号，通过V1、V2，到V4整合为立体视觉，双眼视差也起到了重要作用。进一步可以提取空间位置信息。
 
 <img width="700px" src="./docs/retina.png">
@@ -170,7 +167,7 @@ https://www.cas.cn/zt/sszt/75yq/cg/202410/t20241001_5034738.shtml
 
 3D相机（中原动力），3D视觉认知、3D视觉识别，单目相机的三维重建、多目相机阵列三维重建/物体位姿估计
 
-##计算模型
+## 计算模型
 
 现代计算机发展所遵循的基本结构形式始终是冯·诺依曼机体系结构。而冯·诺依曼机的模型本质上也是一个图灵机（1936年阿兰·图灵提出的一种抽象的计算模型），图灵机模型如下图：
 
@@ -196,7 +193,7 @@ https://blog.csdn.net/hemeinvyiqiluoben/article/details/54617388
 DOI: https://doi.org/10.1016/j.cell.2020.08.035
 Neuronal Computation Underlying Inferential Reasoning in Humans and Mice
 
-##感知抉择
+## 感知抉择
 
 依靠感知、情绪、运算，做选择
 
@@ -209,7 +206,7 @@ Wikenheiser et al., Suppression of Ventral Hippocampal Output Impairs Integrated
 https://doi.org/10.1016/j.cell.2021.05.022
 
 
-##视网膜
+## 视网膜
 
 视网膜感受野，分为：边缘、运动方向、明暗变化 模拟视网膜同心圆感受野，根据光线明暗对比度，分析出边界。 
 
@@ -227,7 +224,7 @@ https://daily.zhihu.com/story/9314332?yidian_docid=0FwfRRDb&utm_id=0
 
 
 
-##表面亮度
+## 表面亮度
 
 相同亮度区域，表面并不是空的，大量感受野组成的区域会汇聚为一个表面，自动分组。表面上的纹理，可以被分离。
 
@@ -274,11 +271,11 @@ http://www.ziint.zju.edu.cn/index.php/event/details.html?tid=415
 卷积是将多维数据 “卷起来” 积分，大脑视觉皮层的神经网络是依靠激活和抑制的机制，当表达某个形状或纹理的神经元大部分被激活，则被识别，
 
 
-##运动物体
+## 运动物体
 
 视频背景分割，运动物体跟踪，混合高斯，背景消除
 
-##双眼视差
+## 双眼视差
 
 通过双眼视差，在大脑中构成三维模型，<span style="color:red;font-size:26px">三维模型的拓扑不变量（颜色可变、形状可变、大小可变、方向可变）的特征比对是物体识别的关键。</span>
 
@@ -322,7 +319,7 @@ http://www.ziint.zju.edu.cn/index.php/event/details.html?tid=415
 (详细信息见论文：Xu, Han et al. 2016 The Journal of Neuroscience)（论文PDF）
 
 
-##运动边界的检测
+## 运动边界的检测
 
 我们每天看到的是一个动态的世界。运动信息可以帮助我们更好地看清物体的轮廓和远近。左图是我们视觉研究中用到的一类图像，图像中的垂直和水平的边界完全由随机点的运动所产生。两张图的随机点都是沿同一对角线方向运动。人的这种对运动边界的检测能力是怎样产生的还不清楚。我们最近的研究发现，猕猴的第二视觉脑区（V2）存在运动边界的朝向图，说明这个脑区能够“看到”并且“区分”这些垂直和水平的运动边界。与V2对比，初级皮层（V1）的反应却很弱。这说明V2在检测运动边界的过程中起到了重要的作用。
 
@@ -336,7 +333,7 @@ http://www.ziint.zju.edu.cn/index.php/event/details.html?tid=415
 人脸占其中的一个区域。
 
 
-##三维重建
+## 三维重建
 Tesla 在北京时间2022年10月1日的AI Day中展现了Occupancy Network 感知技术（立体视觉中有经典的 occupancy grid模型）。基本的思想是将三维空间划分成体素voxel，通过0/1赋值对voxel进行二分类：有物体的voxel赋值为1，表示voxel被物体占据；没有物体的voxel被赋值为0。当然实际中的赋值可以是概率值，表示voxel存在物体的概率，这个概率也可以理解成密度或者透明度。
 
 一个2D images先经过特征提取，再利用transformer的网络结构将2D特征恢复为3D 空间特征。
@@ -344,10 +341,10 @@ CVPR-2019 Occupancy Networks: Learning 3D Reconstruction in Function Space
 https:github.com/tom-roddick/mono-semantic-maps
 CVPR-2022 MonoScene: Monocular 3D Semantic Scene Completion
 https://avg.is.tuebingen.mpg.de/publications/occupancy-networks
-##图像理解
+## 图像理解
 图像识别只是猜测80%或者99%是一个人脸，如果要主观100%确定是人脸则需要通过已有主观知识做分析抉择和证实。图像理解是一个“猜测与印证”的过程，一定是有强化学习、大脑抉择系统参与。
 
-##程序实现
+## 程序实现
 
 强化学习
 设计一个5*5或 9*9的迷宫游戏，一个入口和出口，也可以增加陷阱或死胡同，经过强化学习，探索出走出迷宫的正确路径。

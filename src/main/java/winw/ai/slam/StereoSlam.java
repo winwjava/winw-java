@@ -28,9 +28,9 @@ public final class StereoSlam implements AutoCloseable {
     }
     private static final class Frame implements AutoCloseable {
         KeyPoint[] keys;
-        Mat descriptors=new Mat();
+        Mat descriptors=new Mat(),image=new Mat();
         double[][] points;
-        @Override public void close(){descriptors.release();}
+        @Override public void close(){descriptors.release();image.release();}
     }
     private static final class Keyframe {
         Frame frame; int id, sequence;
@@ -47,7 +47,8 @@ public final class StereoSlam implements AutoCloseable {
     private final StereoCalibration calibration;
     private final SlamConfig config;
     private final ORB orb;
-    private final BFMatcher matcher=BFMatcher.create(Core.NORM_HAMMING,false);
+    private final SIFT sift;
+    private final BFMatcher matcher;
     private final Mat intrinsics;
     private final MatOfDouble distortion=new MatOfDouble(0,0,0,0,0);
     private final List<Keyframe> keyframes=new ArrayList<>();
@@ -61,7 +62,10 @@ public final class StereoSlam implements AutoCloseable {
 
     public StereoSlam(StereoCalibration calibration,SlamConfig config){
         config.validate();this.calibration=Objects.requireNonNull(calibration);this.config=config.copy();
-        orb=ORB.create(config.features);intrinsics=calibration.cameraMatrix();
+        orb=ORB.create(config.features);orb.setFastThreshold(7);
+        sift=SIFT.create(config.features,3,.01,10,1.6);
+        matcher=BFMatcher.create(config.useSift?Core.NORM_L2:Core.NORM_HAMMING,false);
+        intrinsics=calibration.cameraMatrix();
         log.info("SLAM calibration per-eye={}x{} fx={} fy={} cx={} cy={} rightCx={} baseline={}m; features={} minInliers={} epipolarTolerance={}px depth=[{},{}]m",calibration.width,calibration.height,calibration.fx,calibration.fy,calibration.cx,calibration.cy,calibration.rightCx,calibration.baseline,config.features,config.minInliers,config.epipolarTolerance,config.minDepth,config.maxDepth);
     }
     public Result process(Mat left,Mat right,double timestamp){
@@ -91,7 +95,8 @@ public final class StereoSlam implements AutoCloseable {
             Keyframe latest=keyframes.get(keyframes.size()-1);
             boolean insert=depth>=config.minInliers&&keyframes.size()<config.maxKeyframes
                 &&(sequence-latest.sequence>=config.keyframeInterval
-                    || pose.distance(graph.pose(latest.id))>=config.keyframeTranslation);
+                    || pose.distance(graph.pose(latest.id))>=config.keyframeTranslation
+                    || (sequence-latest.sequence>=2&&best.inliers<config.minInliers*3));
             int anchor=best.reference.id;
             if(insert){
                 // A loop requires two consecutive frames agreeing with the same old map.
@@ -153,7 +158,9 @@ public final class StereoSlam implements AutoCloseable {
         Frame f=new Frame();Mat l=gray(left),r=gray(right),rd=new Mat(),mask=new Mat();
         MatOfKeyPoint lk=new MatOfKeyPoint(),rk=new MatOfKeyPoint();
         try{
-            orb.detectAndCompute(l,mask,lk,f.descriptors);orb.detectAndCompute(r,mask,rk,rd);
+            Feature2D extractor=config.useSift?sift:orb;
+            extractor.detectAndCompute(l,mask,lk,f.descriptors);extractor.detectAndCompute(r,mask,rk,rd);
+            l.copyTo(f.image);
             f.keys=lk.toArray();KeyPoint[] rightKeys=rk.toArray();f.points=new double[f.keys.length][];
             List<DMatch> stereoMatches=matches(f.descriptors,rd);
             int verticalRejected=0,disparityRejected=0,depthRejected=0,accepted=0;
@@ -166,6 +173,16 @@ public final class StereoSlam implements AutoCloseable {
                 if(p==null){disparityRejected++;continue;}
                 if(p[2]<config.minDepth||p[2]>config.maxDepth){depthRejected++;continue;}
                 f.points[m.queryIdx]=p;accepted++;
+            }
+            // Forward/backward patch tracking supplies depth for corners whose independently
+            // detected right descriptors are absent. Geometry and photometric checks remain mandatory.
+            List<Point> source=new ArrayList<>();for(KeyPoint key:f.keys)source.add(key.pt);
+            Point[] tracked=config.useOpticalFlow?flow(l,r,source):new Point[source.size()];
+            for(int i=0;i<tracked.length;i++)if(f.points[i]==null&&tracked[i]!=null){
+                Point a=f.keys[i].pt,b=tracked[i];
+                if(Math.abs(a.y-b.y)>config.epipolarTolerance)continue;
+                double[] p=calibration.triangulate(a.x,a.y,b.x);
+                if(p!=null&&p[2]>=config.minDepth&&p[2]<=config.maxDepth){f.points[i]=p;accepted++;}
             }
             String diagnostic="Stereo frame={} leftFeatures={} rightFeatures={} mutualRatioMatches={} rejectVertical={} rejectNonPositiveDisparity={} rejectDepth={} accepted={} meanAbsVertical={}px meanDisparity={}px";
             Object[] values={sequence+1,f.keys.length,rightKeys.length,stereoMatches.size(),verticalRejected,disparityRejected,depthRejected,accepted,stereoMatches.isEmpty()?0:verticalSum/stereoMatches.size(),stereoMatches.isEmpty()?0:disparitySum/stereoMatches.size()};
@@ -185,14 +202,39 @@ public final class StereoSlam implements AutoCloseable {
             for(MatOfDMatch row:reverse){DMatch[] m=row.toArray();if(m.length==2&&m[0].distance<config.ratio*m[1].distance)
                 back[m[0].queryIdx]=m[0].trainIdx;}
             for(MatOfDMatch row:forward){DMatch[] m=row.toArray();if(m.length==2&&m[0].distance<config.ratio*m[1].distance
-                &&m[0].distance<64&&back[m[0].trainIdx]==m[0].queryIdx)result.add(m[0]);}
+                &&(config.useSift||m[0].distance<64)&&back[m[0].trainIdx]==m[0].queryIdx)result.add(m[0]);}
             return result;
         }finally{for(Mat m:forward)m.release();for(Mat m:reverse)m.release();}
     }
+    private static Point[] flow(Mat a,Mat b,List<Point> source){
+        Point[] result=new Point[source.size()];if(source.isEmpty())return result;
+        MatOfPoint2f from=new MatOfPoint2f(),to=new MatOfPoint2f(),back=new MatOfPoint2f();
+        MatOfByte status=new MatOfByte(),reverse=new MatOfByte();MatOfFloat error=new MatOfFloat(),re=new MatOfFloat();
+        try{from.fromList(source);
+            org.opencv.video.Video.calcOpticalFlowPyrLK(a,b,from,to,status,error,new Size(21,21),3);
+            org.opencv.video.Video.calcOpticalFlowPyrLK(b,a,to,back,reverse,re,new Size(21,21),3);
+            Point[] q=to.toArray(),p=back.toArray();byte[] ok=status.toArray(),rok=reverse.toArray();float[] err=error.toArray();
+            for(int i=0;i<q.length;i++)if(ok[i]!=0&&rok[i]!=0&&err[i]<20&&Math.hypot(source.get(i).x-p[i].x,source.get(i).y-p[i].y)<.7
+                &&q[i].x>=0&&q[i].y>=0&&q[i].x<b.cols()&&q[i].y<b.rows())result[i]=q[i];
+            return result;
+        }finally{for(Mat m:new Mat[]{from,to,back,status,reverse,error,re})m.release();}
+    }
     private Estimate estimate(Keyframe ref,Frame current){
+        Estimate descriptor=estimate(ref,current,false);
+        // Optical flow complements descriptors for nearby frames; historic relocalization
+        // still uses appearance matching to avoid drifting patches across large changes.
+        return config.useOpticalFlow&&sequence-ref.sequence<=config.keyframeInterval*2?better(descriptor,estimate(ref,current,true)):descriptor;
+    }
+    private Estimate estimate(Keyframe ref,Frame current,boolean optical){
         List<Point3> objects=new ArrayList<>();List<Point> pixels=new ArrayList<>();
         Pose world=graph.pose(ref.id);
-        for(DMatch m:matches(ref.frame.descriptors,current.descriptors))if(ref.frame.points[m.queryIdx]!=null){
+        if(optical){
+            List<Point> source=new ArrayList<>();List<Integer> indices=new ArrayList<>();
+            for(int i=0;i<ref.frame.keys.length;i++)if(ref.frame.points[i]!=null){source.add(ref.frame.keys[i].pt);indices.add(i);}
+            Point[] tracked=flow(ref.frame.image,current.image,source);
+            for(int i=0;i<tracked.length;i++)if(tracked[i]!=null){double[] p=world.transform(ref.frame.points[indices.get(i)]);
+                objects.add(new Point3(p[0],p[1],p[2]));pixels.add(tracked[i]);}
+        }else for(DMatch m:matches(ref.frame.descriptors,current.descriptors))if(ref.frame.points[m.queryIdx]!=null){
             double[] p=world.transform(ref.frame.points[m.queryIdx]);objects.add(new Point3(p[0],p[1],p[2]));
             pixels.add(current.keys[m.trainIdx].pt);
         }

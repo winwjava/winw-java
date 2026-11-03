@@ -2,6 +2,9 @@ package winw.ai.slam;
 
 /** Defaults for small, static scenes. Create a new engine after changing configuration. */
 public final class SlamConfig {
+    /** Optional slower descriptor backend; ORB remains the real-time default. */
+    public boolean useSift=false;
+    public boolean useOpticalFlow=true;
     public int features=1800, minInliers=20, keyframeInterval=10, loopGap=20, maxKeyframes=80;
     public double ratio=.75, epipolarTolerance=1.5, minDepth=.3, maxDepth=60;
     public double reprojectionError=3, minInlierRatio=.35, keyframeTranslation=.15;
@@ -12,7 +15,7 @@ public final class SlamConfig {
             throw new IllegalArgumentException("Invalid SLAM configuration");
     }
     SlamConfig copy() {
-        SlamConfig c=new SlamConfig(); c.features=features;c.minInliers=minInliers;c.keyframeInterval=keyframeInterval;
+        SlamConfig c=new SlamConfig(); c.useSift=useSift;c.useOpticalFlow=useOpticalFlow; c.features=features;c.minInliers=minInliers;c.keyframeInterval=keyframeInterval;
         c.loopGap=loopGap;c.maxKeyframes=maxKeyframes;c.ratio=ratio;c.epipolarTolerance=epipolarTolerance;
         c.minDepth=minDepth;c.maxDepth=maxDepth;c.reprojectionError=reprojectionError;
         c.minInlierRatio=minInlierRatio;c.keyframeTranslation=keyframeTranslation;return c;

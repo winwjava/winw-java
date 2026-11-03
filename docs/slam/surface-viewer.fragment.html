@@ -1,0 +1,72 @@
+<div id="stereo-surface-view">
+  <h3>双目三维环境 · 改进前后对照</h3>
+  <div class="viz-controls">
+    <label class="form-label">显示 <select id="ss-mode" class="form-select"><option value="surface">连续表面重建</option><option value="occ">旧版占据体素对照</option></select></label>
+    <button class="btn" id="ss-play" type="button">播放</button>
+    <button class="btn" id="ss-fit" type="button">主表面取景</button>
+    <label class="form-check"><input class="form-check-input" id="ss-trusted" type="checkbox"><span class="form-check-label">仅高置信表面</span></label>
+    <label class="form-check"><input class="form-check-input" id="ss-color" type="checkbox" checked><span class="form-check-label">原图着色</span></label>
+  </div>
+  <label class="form-label" for="ss-frame">原始帧 <span id="ss-label"></span></label>
+  <input class="form-range" id="ss-frame" type="range" min="0" max="119" value="12">
+  <div id="ss-status" aria-live="polite"></div>
+  <div class="ss-scene"><canvas id="ss-canvas" role="img" aria-label="可拖动旋转、滚轮缩放的实际双目三维重建"></canvas><figure><img id="ss-image" alt="该帧原始左眼图像"><figcaption>对应原图</figcaption></figure></div>
+  <div class="text-small">相机局部坐标。完整表面包含低置信区域的平滑/平面推断，不等同于确认占据；空洞和背面未知。默认取景覆盖主要表面，缩小可看外围几何。</div>
+</div>
+<style>
+#stereo-surface-view .ss-scene{display:grid;grid-template-columns:minmax(0,3fr) minmax(0,1fr);gap:12px;align-items:start}
+#stereo-surface-view canvas{display:block;width:100%;height:500px;touch-action:none;background:var(--muted)}
+#stereo-surface-view figure{margin:0;min-width:0}#stereo-surface-view img{width:100%;height:auto}
+#stereo-surface-view #ss-status{margin:10px 0}
+@media(max-width:600px){#stereo-surface-view .ss-scene{grid-template-columns:1fr}#stereo-surface-view canvas{height:410px}#stereo-surface-view figure{max-width:240px}}
+</style>
+<script type="application/json" id="ss-data">__SURFACE_DATA__</script>
+<script>
+(()=>{
+ const root=document.getElementById('stereo-surface-view'),data=JSON.parse(document.getElementById('ss-data').textContent);
+ const canvas=root.querySelector('#ss-canvas'),ctx=canvas.getContext('2d'),slider=root.querySelector('#ss-frame'),mode=root.querySelector('#ss-mode');
+ const status=root.querySelector('#ss-status'),photo=root.querySelector('#ss-image'),color=root.querySelector('#ss-color'),trusted=root.querySelector('#ss-trusted');
+ let index=Math.max(0,data.frames.findIndex(f=>f.index===12)),mesh=null,loading=0,yaw=-.3,pitch=.16,zoom=1,centre=[0,0,1],radius=1,drag=null,timer=null;
+ slider.max=data.frames.length-1;slider.value=index;root.querySelector('#ss-play').disabled=data.frames.length<2;
+ const cache=new Map();
+ async function decode(frame){if(cache.has(frame.index))return cache.get(frame.index);
+  const bytes=Uint8Array.from(atob(frame.mesh),c=>c.charCodeAt(0));
+  const buffer=await new Response(new Blob([bytes]).stream().pipeThrough(new DecompressionStream('gzip'))).arrayBuffer();
+  const view=new DataView(buffer);if(view.getInt32(0)!==0x53555246)throw Error('三维表面数据无效');
+  const count=view.getInt32(4),xyz=new Float32Array(count*9),rgb=new Uint32Array(count),quality=new Float32Array(count);let offset=8;
+  for(let i=0;i<count;i++){if(view.getInt32(offset)!==3)throw Error('不支持的表面');offset+=4;for(let j=0;j<9;j++){xyz[i*9+j]=view.getFloat32(offset);offset+=4;}rgb[i]=view.getUint32(offset);quality[i]=view.getFloat32(offset+4);offset+=8;}
+  const result={xyz,rgb,quality,count};cache.set(frame.index,result);if(cache.size>4)cache.delete(cache.keys().next().value);return result;
+ }
+ function remember(){if(window.openai?.setWidgetState)window.openai.setWidgetState({modelContent:{frame:data.frames[index].index,mode:mode.value,trusted:trusted.checked},privateContent:{yaw,pitch,zoom}}).catch(()=>{});}
+ async function change(){const serial=++loading,f=data.frames[index];root.querySelector('#ss-label').textContent=f.index+' / 119';photo.src='data:image/jpeg;base64,'+f.thumbnail;status.textContent='正在重建视图…';
+  try{const decoded=await decode(f);if(serial!==loading)return;mesh=decoded;fit();
+   status.textContent='第 '+f.index+' 帧 · '+decoded.count+' 连续面片 · 高置信深度 '+(f.trusted/307200*100).toFixed(1)+'% · 重建 '+f.ms.toFixed(1)+' ms（不含显示）';draw();
+  }catch(e){status.textContent=e.message;status.setAttribute('role','alert');}
+ }
+ function fit(){if(!mesh||!mesh.count)return;const lo=[],hi=[];for(let k=0;k<3;k++){const a=[];for(let i=k;i<mesh.xyz.length;i+=3)a.push(mesh.xyz[i]);a.sort((x,y)=>x-y);lo[k]=a[Math.floor(a.length*.05)];hi[k]=a[Math.min(a.length-1,Math.floor(a.length*.95))];}centre=lo.map((x,k)=>(x+hi[k])/2);radius=Math.max(.15,Math.hypot(...hi.map((x,k)=>(x-lo[k])/2)));zoom=1;}
+ function draw(){const w=canvas.clientWidth,h=canvas.clientHeight,dpr=Math.min(devicePixelRatio||1,2);canvas.width=w*dpr;canvas.height=h*dpr;ctx.setTransform(dpr,0,0,dpr,0,0);ctx.clearRect(0,0,w,h);if(!mesh)return;
+  const style=getComputedStyle(root),fg=style.color;const probe=document.createElement('span');probe.style.color='var(--viz-series-1)';root.append(probe);const series=getComputedStyle(probe).color;probe.remove();
+  const cy=Math.cos(yaw),sy=Math.sin(yaw),cp=Math.cos(pitch),sp=Math.sin(pitch),polygons=[];
+  function project(x,y,z){x-=centre[0];y=-(y-centre[1]);z-=centre[2];const u=x*cy+z*sy,a=-x*sy+z*cy,v=y*cp-a*sp,depth=y*sp+a*cp,denom=radius*3-depth;if(denom<.03)return null;const scale=Math.min(w,h)*1.45*zoom/denom;return [w/2+u*scale,h/2-v*scale,depth];}
+  if(mode.value==='surface'){
+   for(let i=0;i<mesh.count;i++){if(trusted.checked&&mesh.quality[i]<.5)continue;const p=[];let depth=0,valid=true;for(let j=0;j<3;j++){const k=i*9+j*3,q=project(mesh.xyz[k],mesh.xyz[k+1],mesh.xyz[k+2]);if(!q){valid=false;break;}p.push(q);depth+=q[2];}if(valid)polygons.push({p,depth:depth/3,rgb:mesh.rgb[i],light:.95});}
+  }else{
+   const faces=[[0,2,3,1],[4,5,7,6],[0,1,5,4],[2,6,7,3],[0,4,6,2],[1,3,7,5]];
+   for(const cell of data.frames[index].voxels){const vertices=[];for(let i=0;i<8;i++)vertices.push(project((cell[0]+(i&1))*.05,(cell[1]+((i>>1)&1))*.05,(cell[2]+((i>>2)&1))*.05));
+    for(let fi=0;fi<6;fi++){const p=faces[fi].map(j=>vertices[j]);if(p.some(q=>!q))continue;polygons.push({p,depth:p.reduce((s,q)=>s+q[2],0)/4,rgb:cell[3],light:[.65,.9,.8,1,.72,.86][fi]});}
+   }
+  }
+  polygons.sort((a,b)=>a.depth-b.depth);
+  for(const f of polygons){ctx.beginPath();f.p.forEach((p,i)=>i?ctx.lineTo(p[0],p[1]):ctx.moveTo(p[0],p[1]));ctx.closePath();
+   const c=f.rgb;ctx.fillStyle=color.checked?`rgb(${Math.round(((c>>16)&255)*f.light)},${Math.round(((c>>8)&255)*f.light)},${Math.round((c&255)*f.light)})`:series;ctx.fill();
+  }
+  ctx.fillStyle=fg;ctx.font='12px sans-serif';ctx.fillText('拖动旋转 · 滚轮缩放 · '+(mode.value==='surface'?'连续表面':'旧版 OCC 对照'),12,h-18);
+ }
+ slider.oninput=()=>{index=+slider.value;change();remember()};mode.onchange=()=>{draw();remember()};color.onchange=draw;trusted.onchange=()=>{draw();remember()};root.querySelector('#ss-fit').onclick=()=>{fit();draw()};
+ root.querySelector('#ss-play').onclick=()=>{if(timer){clearInterval(timer);timer=null;root.querySelector('#ss-play').textContent='播放';}else{timer=setInterval(()=>{index=(index+1)%data.frames.length;slider.value=index;change()},600);root.querySelector('#ss-play').textContent='暂停';}};
+ canvas.onpointerdown=e=>{drag=[e.clientX,e.clientY];canvas.setPointerCapture(e.pointerId)};
+ canvas.onpointermove=e=>{if(!drag)return;yaw+=(e.clientX-drag[0])*.008;pitch=Math.max(-1.4,Math.min(1.4,pitch+(e.clientY-drag[1])*.008));drag=[e.clientX,e.clientY];draw()};canvas.onpointerup=()=>{drag=null;remember()};canvas.onpointercancel=()=>drag=null;
+ canvas.addEventListener('wheel',e=>{e.preventDefault();zoom=Math.max(.3,Math.min(8,zoom*Math.exp(-e.deltaY*.001)));draw()},{passive:false});
+ new ResizeObserver(draw).observe(canvas);new MutationObserver(draw).observe(document.documentElement,{attributes:true,attributeFilter:['class','style','data-theme']});change();
+})();
+</script>
